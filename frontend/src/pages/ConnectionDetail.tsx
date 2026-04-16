@@ -1,18 +1,23 @@
 import { useEffect, useState, useRef } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { api } from "../api";
 import type { Target, ProfileMeta, StartProfileRequest } from "../api";
 import ProfileTypeBadge from "../components/ProfileTypeBadge";
+import MemoryChart from "../components/MemoryChart";
 
 type ProfileType = "cpu" | "heap" | "goroutine" | "block" | "mutex" | "all_snapshots";
 
 export default function ConnectionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [target, setTarget] = useState<Target | null>(null);
   const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
   const [typeFilter, setTypeFilter] = useState("");
   const [notFound, setNotFound] = useState(false);
+
+  // Derive tab from URL path
+  const tab = location.pathname.endsWith("/monitor") ? "monitor" : "profiling";
 
   const loadTarget = () => {
     // Try active targets first, then saved
@@ -104,68 +109,76 @@ export default function ConnectionDetail() {
         </div>
       </div>
 
-      {/* Profiling controls -- only for active connections */}
-      {target.status === "connected" && (
-        <ProfilingControls
-          targetId={target.id}
-          onComplete={() => { if (target) loadProfiles(target.url); }}
-        />
+      {/* Profiling tab */}
+      {(tab === "profiling" || target.status !== "connected") && (
+        <>
+          {target.status === "connected" && (
+            <ProfilingControls
+              targetId={target.id}
+              onComplete={() => { if (target) loadProfiles(target.url); }}
+            />
+          )}
+
+          <div style={{ marginTop: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 600 }}>Profiles</h2>
+              <div style={{ display: "flex", gap: 6 }}>
+                {["", "cpu", "heap", "goroutine", "block", "mutex"].map((t) => (
+                  <button
+                    key={t}
+                    className={`btn btn-sm ${typeFilter === t ? "btn-primary" : "btn-secondary"}`}
+                    onClick={() => setTypeFilter(t)}
+                  >
+                    {t || "All"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {profiles.length > 0 ? (
+              <div className="card" style={{ padding: 0 }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Timestamp</th>
+                      <th>Duration</th>
+                      <th>Size</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {profiles.map((p) => (
+                      <tr key={p.id}>
+                        <td><ProfileTypeBadge type={p.type} /></td>
+                        <td>{new Date(p.timestamp).toLocaleString()}</td>
+                        <td>{p.durationSec ? `${p.durationSec}s` : "instant"}</td>
+                        <td>{formatBytes(p.size)}</td>
+                        <td>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <Link to={`/profiles/${p.id}`} className="btn btn-primary btn-sm">View</Link>
+                            <button className="btn btn-secondary btn-sm" onClick={() => api.exportProfile(p.id)}>Export</button>
+                            <button className="btn btn-danger btn-sm" onClick={() => deleteProfile(p.id)}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--text-secondary)" }}>
+                No profiles collected yet.{target.status === "connected" ? " Use the controls above to start profiling." : " Reconnect to collect new profiles."}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
-      {/* Profiles list */}
-      <div style={{ marginTop: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>Profiles</h2>
-          <div style={{ display: "flex", gap: 6 }}>
-            {["", "cpu", "heap", "goroutine", "block", "mutex"].map((t) => (
-              <button
-                key={t}
-                className={`btn btn-sm ${typeFilter === t ? "btn-primary" : "btn-secondary"}`}
-                onClick={() => setTypeFilter(t)}
-              >
-                {t || "All"}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {profiles.length > 0 ? (
-          <div className="card" style={{ padding: 0 }}>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>Timestamp</th>
-                  <th>Duration</th>
-                  <th>Size</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {profiles.map((p) => (
-                  <tr key={p.id}>
-                    <td><ProfileTypeBadge type={p.type} /></td>
-                    <td>{new Date(p.timestamp).toLocaleString()}</td>
-                    <td>{p.durationSec ? `${p.durationSec}s` : "instant"}</td>
-                    <td>{formatBytes(p.size)}</td>
-                    <td>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <Link to={`/profiles/${p.id}`} className="btn btn-primary btn-sm">View</Link>
-                        <button className="btn btn-secondary btn-sm" onClick={() => api.exportProfile(p.id)}>Export</button>
-                        <button className="btn btn-danger btn-sm" onClick={() => deleteProfile(p.id)}>Delete</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--text-secondary)" }}>
-            No profiles collected yet.{target.status === "connected" ? " Use the controls above to start profiling." : " Reconnect to collect new profiles."}
-          </div>
-        )}
-      </div>
+      {/* Monitor tab */}
+      {tab === "monitor" && target.status === "connected" && (
+        <MemoryChart targetId={target.id} active={tab === "monitor"} />
+      )}
     </div>
   );
 }

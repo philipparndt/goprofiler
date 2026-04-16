@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { ProfileDetail, CallTreeNode, TopFunction } from "../api";
 import flamegraph from "d3-flame-graph";
@@ -10,6 +10,7 @@ type SortKey = "name" | "self" | "selfPct" | "cum" | "cumPct" | "calls";
 
 export default function ProfileViewer() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [profile, setProfile] = useState<ProfileDetail | null>(null);
   const [tab, setTab] = useState<Tab>("flamegraph");
   const [search, setSearch] = useState("");
@@ -86,7 +87,7 @@ export default function ProfileViewer() {
   return (
     <div>
       <div className="page-header" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <Link to="/profiles" className="btn btn-secondary btn-sm">&larr; Back</Link>
+        <button className="btn btn-secondary btn-sm" onClick={() => navigate(-1)}>&larr; Back</button>
         <div>
           <h1>{profile.type.toUpperCase()} Profile</h1>
           <p>{profile.targetURL} &middot; {new Date(profile.timestamp).toLocaleString()}{profile.durationSec ? ` \u00b7 ${profile.durationSec}s` : ""}</p>

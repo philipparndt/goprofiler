@@ -29,7 +29,7 @@ export default function Connections() {
     try {
       const target = await api.connect(url.trim());
       setUrl("");
-      navigate(`/connections/${target.id}`);
+      navigate(`/connections/${target.id}/profiling`);
     } catch (e: any) {
       setError(e.message || "Connection failed");
     } finally {
@@ -100,7 +100,7 @@ function ConnectionCard({ target }: { target: Target }) {
 
   return (
     <Link
-      to={`/connections/${target.id}`}
+      to={`/connections/${target.id}/profiling`}
       className="card"
       style={{ textDecoration: "none", color: "inherit", padding: 16, transition: "border-color 0.15s", cursor: "pointer" }}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}

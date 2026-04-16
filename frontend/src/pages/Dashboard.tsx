@@ -46,7 +46,7 @@ export default function Dashboard() {
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Active Connections</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
             {connected.map((t) => (
-              <Link key={t.id} to={`/connections/${t.id}`} className="card" style={{ padding: 16, textDecoration: "none", color: "inherit", transition: "border-color 0.15s" }}
+              <Link key={t.id} to={`/connections/${t.id}/profiling`} className="card" style={{ padding: 16, textDecoration: "none", color: "inherit", transition: "border-color 0.15s" }}
                 onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
                 onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
               >

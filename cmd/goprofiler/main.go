@@ -17,6 +17,7 @@ import (
 	"github.com/philipparndt/goprofiler/internal/api"
 	"github.com/philipparndt/goprofiler/internal/connection"
 	fe "github.com/philipparndt/goprofiler/internal/frontend"
+	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/storage"
 )
 
@@ -49,7 +50,19 @@ func main() {
 	}
 	defer connStore.Close()
 
-	handler := api.NewHandler(connStore, store)
+	monitorSvc := monitor.NewService()
+	defer monitorSvc.Close()
+
+	// Start monitoring for all currently active targets
+	for _, t := range connStore.List() {
+		monitorSvc.StartTarget(t.ID, t.URL)
+	}
+
+	// Set callbacks so monitor starts/stops with connections
+	connStore.OnConnect = func(id, url string) { monitorSvc.StartTarget(id, url) }
+	connStore.OnDisconnect = func(id string) { monitorSvc.StopTarget(id) }
+
+	handler := api.NewHandler(connStore, store, monitorSvc)
 
 	r := chi.NewRouter()
 	middleware.DefaultLogger = vlogchi.LoggerWithLevel(-4)

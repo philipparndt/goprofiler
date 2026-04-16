@@ -47,6 +47,9 @@ type Store struct {
 	client   *http.Client
 	cancel   context.CancelFunc
 	filePath string
+
+	OnConnect    func(id, url string) // called after a target connects
+	OnDisconnect func(id string)      // called after a target disconnects
 }
 
 func NewStore(configDir string) (*Store, error) {
@@ -84,7 +87,7 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 	now := time.Now()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Note: manually unlocked before callbacks to avoid holding lock during callback
 
 	// Check if this URL is already saved — reuse its ID
 	for id, t := range s.saved {
@@ -95,7 +98,11 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 			s.active[id] = t
 			delete(s.saved, id)
 			s.persist()
+			s.mu.Unlock()
 			vlog.Info("target reconnected", "id", id, "url", rawURL)
+			if s.OnConnect != nil {
+				s.OnConnect(id, rawURL)
+			}
 			return t, nil
 		}
 	}
@@ -104,6 +111,7 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 	for _, t := range s.active {
 		if t.URL == rawURL {
 			copy := *t
+			s.mu.Unlock()
 			return &copy, nil
 		}
 	}
@@ -117,18 +125,22 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 	}
 	s.active[t.ID] = t
 	s.persist()
+	s.mu.Unlock()
 
 	vlog.Info("target connected", "id", t.ID, "url", t.URL)
+	if s.OnConnect != nil {
+		s.OnConnect(t.ID, t.URL)
+	}
 	return t, nil
 }
 
 // Disconnect moves a target from active to saved.
 func (s *Store) Disconnect(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	t, ok := s.active[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("target not found: %s", id)
 	}
 
@@ -136,8 +148,12 @@ func (s *Store) Disconnect(id string) error {
 	s.saved[id] = t
 	delete(s.active, id)
 	s.persist()
+	s.mu.Unlock()
 
 	vlog.Info("target disconnected (saved)", "id", id, "url", t.URL)
+	if s.OnDisconnect != nil {
+		s.OnDisconnect(id)
+	}
 	return nil
 }
 
@@ -159,10 +175,10 @@ func (s *Store) Reconnect(id string) (*Target, error) {
 	now := time.Now()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	t, ok = s.saved[id]
 	if !ok {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("saved target not found: %s", id)
 	}
 
@@ -172,8 +188,12 @@ func (s *Store) Reconnect(id string) (*Target, error) {
 	s.active[id] = t
 	delete(s.saved, id)
 	s.persist()
+	s.mu.Unlock()
 
 	vlog.Info("target reconnected", "id", id, "url", url)
+	if s.OnConnect != nil {
+		s.OnConnect(id, url)
+	}
 	copy := *t
 	return &copy, nil
 }

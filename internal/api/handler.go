@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/pprof/profile"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/philipparndt/goprofiler/internal/connection"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
+	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/profiler"
 	"github.com/philipparndt/goprofiler/internal/storage"
 )
@@ -21,16 +23,18 @@ type Handler struct {
 	connections *connection.Store
 	storage     *storage.Store
 	collector   *profiler.Collector
+	monitor     *monitor.Service
 
 	mu           sync.Mutex
 	activeCancel map[string]context.CancelFunc
 }
 
-func NewHandler(connections *connection.Store, storage *storage.Store) *Handler {
+func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service) *Handler {
 	return &Handler{
 		connections:  connections,
 		storage:      storage,
 		collector:    profiler.NewCollector(),
+		monitor:      monitorSvc,
 		activeCancel: make(map[string]context.CancelFunc),
 	}
 }
@@ -44,6 +48,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Delete("/{id}", h.disconnectTarget)
 		r.Post("/{id}/profiles", h.startProfile)
 		r.Delete("/{id}/profiles/active", h.cancelProfile)
+		r.Get("/{id}/memstats/history", h.getMemStatsHistory)
 
 		r.Get("/saved", h.listSavedTargets)
 		r.Post("/saved/{id}/reconnect", h.reconnectTarget)
@@ -279,6 +284,26 @@ func (h *Handler) cancelProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) getMemStatsHistory(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	var since time.Time
+	if s := r.URL.Query().Get("since"); s != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			since = ts
+		}
+	}
+
+	history := h.monitor.GetHistory(target.URL, since)
+	writeJSON(w, http.StatusOK, history)
 }
 
 func (h *Handler) listProfiles(w http.ResponseWriter, r *http.Request) {

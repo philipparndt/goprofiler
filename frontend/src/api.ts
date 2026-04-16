@@ -104,4 +104,30 @@ export const api = {
 
   diffProfiles: (baseId: string, compareId: string) =>
     request<ProfileDetail>(`/profiles/diff?base=${baseId}&compare=${compareId}`),
+
+  getMemStatsHistory: (targetId: string, since?: string) => {
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+    return request<MemStatsHistory>(`/targets/${targetId}/memstats/history${qs}`);
+  },
 };
+
+export interface MemStatsDataPoint {
+  timestamp: string;
+  heapAlloc: number;
+  heapSys: number;
+  sys: number;
+  numGC: number;
+  pauseTotalNs: number;
+  lastPauseNs: number;
+}
+
+export interface MemStatsGCEvent {
+  timestamp: string;
+  pauseNs: number;
+  gcNum: number;
+}
+
+export interface MemStatsHistory {
+  points: MemStatsDataPoint[];
+  gcEvents: MemStatsGCEvent[];
+}
