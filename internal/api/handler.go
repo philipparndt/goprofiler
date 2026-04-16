@@ -16,6 +16,7 @@ import (
 	"github.com/philipparndt/goprofiler/internal/connection"
 	"github.com/philipparndt/goprofiler/internal/expvar"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
+	"github.com/philipparndt/goprofiler/internal/traceparser"
 	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/profiler"
 	"github.com/philipparndt/goprofiler/internal/storage"
@@ -29,6 +30,7 @@ type Handler struct {
 
 	mu           sync.Mutex
 	activeCancel map[string]context.CancelFunc
+	traceCache   map[string]*traceparser.TraceData
 }
 
 func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service) *Handler {
@@ -38,6 +40,7 @@ func NewHandler(connections *connection.Store, storage *storage.Store, monitorSv
 		collector:    profiler.NewCollector(),
 		monitor:      monitorSvc,
 		activeCancel: make(map[string]context.CancelFunc),
+		traceCache:   make(map[string]*traceparser.TraceData),
 	}
 }
 
@@ -68,6 +71,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Delete("/{id}", h.deleteProfile)
 		r.Put("/{id}/label", h.updateLabel)
 		r.Get("/{id}/raw", h.exportProfile)
+		r.Get("/{id}/trace-data", h.getTraceData)
 	})
 
 	return r
@@ -477,6 +481,49 @@ func (h *Handler) updateLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) getTraceData(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	rec, err := h.storage.GetProfile(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if rec.Type != "trace" {
+		writeError(w, http.StatusBadRequest, "not a trace profile")
+		return
+	}
+
+	// Check cache
+	h.mu.Lock()
+	if cached, ok := h.traceCache[id]; ok {
+		h.mu.Unlock()
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
+	h.mu.Unlock()
+
+	data, err := h.storage.GetProfileData(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	td, err := traceparser.ParseTrace(data)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "parse trace: "+err.Error())
+		return
+	}
+
+	// Cache
+	h.mu.Lock()
+	h.traceCache[id] = td
+	h.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, td)
 }
 
 func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,7 @@ export const api = {
   getProcessInfo: (targetId: string) => request<ProcessInfo>(`/targets/${targetId}/process-info`),
   getAvailableProfiles: (targetId: string) => request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),
   getExpvars: (targetId: string) => request<{ timestamp: string; metrics: Record<string, any> }>(`/targets/${targetId}/expvars`),
+  getTraceData: (profileId: string) => request<TraceData>(`/profiles/${profileId}/trace-data`),
   getGoroutineGroups: (targetId: string, top?: number) =>
     request<GoroutineGroupsResponse>(`/targets/${targetId}/goroutine-groups${top ? `?top=${top}` : ""}`),
 
@@ -116,6 +117,14 @@ export const api = {
     return request<MemStatsHistory>(`/targets/${targetId}/memstats/history${qs}`);
   },
 };
+
+export interface TraceData {
+  meta: { durationNs: number; goroutineCount: number; processorCount: number; gcCount: number };
+  goroutines: { id: number; name: string; spans: { start: number; end: number; state: string; reason?: string; processor?: number; stack?: string[] }[] }[];
+  gcEvents: { start: number; end: number; pauseNs: number }[];
+  processors: { id: number; spans: { start: number; end: number; goroutineId: number }[] }[];
+  blockingSummary: { location: string; category: string; totalDuration: number; count: number; stack?: string[] }[];
+}
 
 export interface GoroutineGroupsResponse {
   total: number;

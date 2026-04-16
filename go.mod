@@ -9,6 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github1.vg.vector.int/pes/vehub-vlog-go v0.6.0
 	github1.vg.vector.int/pes/vehub-vlog-go/chi v0.0.0-20260415090705-c3ddb6a369de
+	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
 	modernc.org/sqlite v1.48.2
 )
 

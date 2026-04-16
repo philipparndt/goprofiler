@@ -17,54 +17,62 @@ type DiscoveredProfile struct {
 	Kind  string `json:"kind"` // "recording" or "snapshot"
 }
 
-// profileLineRe matches lines like:
-// <a href="goroutine?debug=1">goroutine</a> (123)
-// <a href="/debug/pprof/heap?debug=1">heap</a>
-var profileLineRe = regexp.MustCompile(`<a href="[^"]*">([^<]+)</a>(?:\s*\((\d+)\))?`)
+// profileLineRe matches table rows like:
+// <tr><td>561</td><td><a href='allocs?debug=1'>allocs</a></td></tr>
+// Also matches older format: <a href="goroutine?debug=1">goroutine</a> (123)
+var tableRowRe = regexp.MustCompile(`<td>(\d+)</td><td><a href=['"][^'"]*['"]>([^<]+)</a>`)
+var linkOnlyRe = regexp.MustCompile(`<a href=['"][^'"]*['"]>([^<]+)</a>(?:\s*\((\d+)\))?`)
 
 func ParsePprofIndex(html string) []DiscoveredProfile {
 	var profiles []DiscoveredProfile
 	seen := make(map[string]bool)
 
-	for _, match := range profileLineRe.FindAllStringSubmatch(html, -1) {
-		name := strings.TrimSpace(match[1])
+	addProfile := func(name string, count *int) {
+		name = strings.TrimSpace(name)
 
-		// Normalize "profile" to "cpu"
 		if name == "profile" {
 			name = "cpu"
 		}
 
-		// Skip entries we handle specially or that aren't useful
-		if name == "cmdline" || name == "symbol" || name == "trace" {
-			continue
+		if name == "cmdline" || name == "symbol" {
+			return
 		}
 
 		if seen[name] {
-			continue
+			return
 		}
 		seen[name] = true
 
 		dp := DiscoveredProfile{
-			Name: name,
-			Kind: "snapshot",
+			Name:  name,
+			Kind:  "snapshot",
+			Count: count,
 		}
 
-		if name == "cpu" {
+		if name == "cpu" || name == "trace" {
 			dp.Kind = "recording"
-		}
-
-		if match[2] != "" {
-			if count, err := strconv.Atoi(match[2]); err == nil {
-				dp.Count = &count
-			}
 		}
 
 		profiles = append(profiles, dp)
 	}
 
-	// Also add trace as a recording type
-	if !seen["trace"] {
-		profiles = append(profiles, DiscoveredProfile{Name: "trace", Kind: "recording"})
+	// Try table format first: <tr><td>COUNT</td><td><a href='...'>NAME</a></td></tr>
+	tableMatches := tableRowRe.FindAllStringSubmatch(html, -1)
+	if len(tableMatches) > 0 {
+		for _, match := range tableMatches {
+			count, _ := strconv.Atoi(match[1])
+			addProfile(match[2], &count)
+		}
+	} else {
+		// Fallback: <a href="...">NAME</a> (COUNT)
+		for _, match := range linkOnlyRe.FindAllStringSubmatch(html, -1) {
+			var count *int
+			if match[2] != "" {
+				c, _ := strconv.Atoi(match[2])
+				count = &c
+			}
+			addProfile(match[1], count)
+		}
 	}
 
 	return profiles
