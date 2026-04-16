@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
 
 	"github.com/philipparndt/goprofiler/internal/connection"
+	"github.com/philipparndt/goprofiler/internal/expvar"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
 	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/profiler"
@@ -49,6 +51,10 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/{id}/profiles", h.startProfile)
 		r.Delete("/{id}/profiles/active", h.cancelProfile)
 		r.Get("/{id}/memstats/history", h.getMemStatsHistory)
+		r.Get("/{id}/process-info", h.getProcessInfo)
+		r.Get("/{id}/profiles/available", h.getAvailableProfiles)
+		r.Get("/{id}/goroutine-groups", h.getGoroutineGroups)
+		r.Get("/{id}/expvars", h.getExpvars)
 
 		r.Get("/saved", h.listSavedTargets)
 		r.Post("/saved/{id}/reconnect", h.reconnectTarget)
@@ -190,7 +196,7 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 
 	// Handle "all_snapshots" special case
 	if req.Type == "all_snapshots" {
-		types := []profiler.ProfileType{profiler.Heap, profiler.Goroutine, profiler.Block, profiler.Mutex}
+		types := []profiler.ProfileType{profiler.Heap, profiler.Goroutine, profiler.Block, profiler.Mutex, profiler.Allocs, profiler.ThreadCreate}
 		var results []storage.ProfileRecord
 
 		for _, pt := range types {
@@ -211,7 +217,7 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ptype == profiler.CPU {
+	if ptype == profiler.CPU || ptype == profiler.Trace {
 		ctx, cancel := context.WithCancel(context.Background())
 		h.mu.Lock()
 		h.activeCancel[targetID] = cancel
@@ -223,7 +229,13 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 			h.mu.Unlock()
 		}()
 
-		collected, err := h.collector.CollectCPU(ctx, target.URL, req.DurationSec)
+		var collected *profiler.CollectedProfile
+		var err error
+		if ptype == profiler.Trace {
+			collected, err = h.collector.CollectTrace(ctx, target.URL, req.DurationSec)
+		} else {
+			collected, err = h.collector.CollectCPU(ctx, target.URL, req.DurationSec)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -306,6 +318,72 @@ func (h *Handler) getMemStatsHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, history)
 }
 
+func (h *Handler) getExpvars(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	metrics, ts, err := expvar.Fetch(client, target.URL)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"timestamp": ts,
+		"metrics":   metrics,
+	})
+}
+
+func (h *Handler) getGoroutineGroups(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	topN := 20
+	if s := r.URL.Query().Get("top"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			topN = n
+		}
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	result, err := monitor.FetchGoroutineGroups(client, target.URL, topN)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) getAvailableProfiles(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	profiles, err := profiler.FetchAvailableProfiles(r.Context(), target.URL)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, profiles)
+}
+
 func (h *Handler) listProfiles(w http.ResponseWriter, r *http.Request) {
 	typeFilter := r.URL.Query().Get("type")
 	targetFilter := r.URL.Query().Get("target")
@@ -332,6 +410,22 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 	data, err := h.storage.GetProfileData(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Traces are binary, not pprof format -- return metadata only
+	if rec.Type == "trace" {
+		resp := map[string]any{
+			"id":          rec.ID,
+			"targetURL":   rec.TargetURL,
+			"type":        rec.Type,
+			"timestamp":   rec.Timestamp,
+			"durationSec": rec.DurationSec,
+			"size":        rec.Size,
+			"label":       rec.Label,
+			"traceType":   true,
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -387,14 +481,26 @@ func (h *Handler) updateLabel(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	rec, err := h.storage.GetProfile(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
 	data, err := h.storage.GetProfileData(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
+	ext := ".pb.gz"
+	if rec.Type == "trace" {
+		ext = ".trace"
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename="+id+".pb.gz")
+	w.Header().Set("Content-Disposition", "attachment; filename="+id+ext)
 	w.Write(data)
 }
 

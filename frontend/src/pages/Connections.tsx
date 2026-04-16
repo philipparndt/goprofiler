@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Target } from "../api";
+import { refreshSidebar } from "../App";
 
 export default function Connections() {
   const [targets, setTargets] = useState<Target[]>([]);
@@ -29,6 +30,7 @@ export default function Connections() {
     try {
       const target = await api.connect(url.trim());
       setUrl("");
+      refreshSidebar();
       navigate(`/connections/${target.id}/profiling`);
     } catch (e: any) {
       setError(e.message || "Connection failed");

@@ -1,11 +1,14 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { api } from "../api";
-import type { Target, ProfileMeta, StartProfileRequest } from "../api";
+import type { Target, ProfileMeta, StartProfileRequest, ProcessInfo, AvailableProfile } from "../api";
 import ProfileTypeBadge from "../components/ProfileTypeBadge";
+import { refreshSidebar, onConnectionChange } from "../App";
 import MemoryChart from "../components/MemoryChart";
+import GoroutineChart from "../components/GoroutineChart";
+import ExpvarMetrics from "../components/ExpvarMetrics";
 
-type ProfileType = "cpu" | "heap" | "goroutine" | "block" | "mutex" | "all_snapshots";
+type ProfileType = "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots";
 
 export default function ConnectionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -15,9 +18,10 @@ export default function ConnectionDetail() {
   const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
   const [typeFilter, setTypeFilter] = useState("");
   const [notFound, setNotFound] = useState(false);
+  const [processInfo, setProcessInfo] = useState<ProcessInfo | null>(null);
 
   // Derive tab from URL path
-  const tab = location.pathname.endsWith("/monitor") ? "monitor" : "profiling";
+  const tab = location.pathname.endsWith("/monitor") ? "monitor" : location.pathname.endsWith("/info") ? "info" : location.pathname.endsWith("/expvars") ? "expvars" : "profiling";
 
   const loadTarget = () => {
     // Try active targets first, then saved
@@ -38,23 +42,36 @@ export default function ConnectionDetail() {
   };
 
   useEffect(() => { loadTarget(); }, [id]);
+  useEffect(() => {
+    if (id) api.getProcessInfo(id).then(setProcessInfo).catch(() => {});
+  }, [id]);
+  // Re-fetch target when connection state changes (e.g. reconnect from sidebar)
+  useEffect(() => {
+    return onConnectionChange(() => {
+      loadTarget();
+      if (id) api.getProcessInfo(id).then(setProcessInfo).catch(() => {});
+    });
+  }, [id]);
   useEffect(() => { if (target) loadProfiles(target.url); }, [typeFilter]);
 
   const disconnect = async () => {
     if (!id) return;
     await api.disconnect(id);
     loadTarget();
+    refreshSidebar();
   };
 
   const reconnect = async () => {
     if (!id) return;
     await api.reconnect(id);
     loadTarget();
+    refreshSidebar();
   };
 
   const remove = async () => {
     if (!id) return;
     await api.removeSavedTarget(id);
+    refreshSidebar();
     navigate("/connections");
   };
 
@@ -89,11 +106,22 @@ export default function ConnectionDetail() {
           <span className={`status-dot ${target.status}`} />
           <div>
             <h1 className="mono" style={{ fontSize: 18 }}>{target.url}</h1>
-            <p>
+            <p style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span className={`badge ${target.status === "connected" ? "badge-success" : target.status === "unreachable" ? "badge-danger" : "badge-warning"}`}>
                 {target.status}
               </span>
-              {target.lastCheck && <span style={{ marginLeft: 8, fontSize: 12, color: "var(--text-muted)" }}>Last check: {new Date(target.lastCheck).toLocaleTimeString()}</span>}
+              {processInfo && (
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {processInfo.cmdline?.length > 0 && (
+                    <span title={processInfo.cmdline.join(" ")} style={{ marginRight: 8 }}>
+                      {processInfo.cmdline[0].split("/").pop()}
+                    </span>
+                  )}
+                  {processInfo.goVersion && <span style={{ marginRight: 8 }}>{processInfo.goVersion}</span>}
+                  {processInfo.goos && processInfo.goarch && <span>{processInfo.goos}/{processInfo.goarch}</span>}
+                </span>
+              )}
+              {target.lastCheck && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Last check: {new Date(target.lastCheck).toLocaleTimeString()}</span>}
             </p>
           </div>
         </div>
@@ -123,7 +151,7 @@ export default function ConnectionDetail() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
               <h2 style={{ fontSize: 16, fontWeight: 600 }}>Profiles</h2>
               <div style={{ display: "flex", gap: 6 }}>
-                {["", "cpu", "heap", "goroutine", "block", "mutex"].map((t) => (
+                {["", "cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate"].map((t) => (
                   <button
                     key={t}
                     className={`btn btn-sm ${typeFilter === t ? "btn-primary" : "btn-secondary"}`}
@@ -177,11 +205,67 @@ export default function ConnectionDetail() {
 
       {/* Monitor tab */}
       {tab === "monitor" && target.status === "connected" && (
-        <MemoryChart targetId={target.id} active={tab === "monitor"} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          <div>
+            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Memory</h2>
+            <MemoryChart targetId={target.id} active={tab === "monitor"} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Goroutines</h2>
+            <GoroutineChart targetId={target.id} active={tab === "monitor"} />
+          </div>
+        </div>
+      )}
+
+      {tab === "info" && (
+        <div className="card">
+          {processInfo ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {processInfo.cmdline && processInfo.cmdline.length > 0 && (
+                <div>
+                  <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>Command Line</h3>
+                  <div className="code-block"><pre><code>{processInfo.cmdline.join(" ")}</code></pre></div>
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 16 }}>
+                {processInfo.goVersion && (
+                  <div>
+                    <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Go Version</h3>
+                    <span className="mono" style={{ fontSize: 14 }}>{processInfo.goVersion}</span>
+                  </div>
+                )}
+                {processInfo.goos && (
+                  <div>
+                    <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>OS</h3>
+                    <span className="mono" style={{ fontSize: 14 }}>{processInfo.goos}</span>
+                  </div>
+                )}
+                {processInfo.goarch && (
+                  <div>
+                    <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Architecture</h3>
+                    <span className="mono" style={{ fontSize: 14 }}>{processInfo.goarch}</span>
+                  </div>
+                )}
+                <div>
+                  <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Target URL</h3>
+                  <span className="mono" style={{ fontSize: 14 }}>{target.url}</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p style={{ color: "var(--text-muted)" }}>Loading process information...</p>
+          )}
+        </div>
+      )}
+
+      {tab === "expvars" && target.status === "connected" && (
+        <ExpvarMetrics targetId={target.id} active={tab === "expvars"} />
       )}
     </div>
   );
 }
+
+const WELL_KNOWN = new Set(["cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate"]);
 
 function ProfilingControls({ targetId, onComplete }: { targetId: string; onComplete: () => void }) {
   const [profileType, setProfileType] = useState<ProfileType>("cpu");
@@ -190,8 +274,17 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [available, setAvailable] = useState<AvailableProfile[] | null>(null);
 
-  const isRecording = profileType === "cpu";
+  useEffect(() => {
+    api.getAvailableProfiles(targetId).then(setAvailable).catch(() => setAvailable(null));
+  }, [targetId]);
+
+  const recordings = available ? available.filter((p) => p.kind === "recording") : [{ name: "cpu", kind: "recording" as const }, { name: "trace", kind: "recording" as const }];
+  const snapshots = available ? available.filter((p) => p.kind === "snapshot" && WELL_KNOWN.has(p.name)) : [{ name: "heap", kind: "snapshot" as const }, { name: "goroutine", kind: "snapshot" as const }, { name: "block", kind: "snapshot" as const }, { name: "mutex", kind: "snapshot" as const }, { name: "allocs", kind: "snapshot" as const }, { name: "threadcreate", kind: "snapshot" as const }];
+  const custom = available ? available.filter((p) => p.kind === "snapshot" && !WELL_KNOWN.has(p.name)) : [];
+
+  const isRecording = profileType === "cpu" || profileType === "trace";
 
   const startProfile = async () => {
     setProfiling(true);
@@ -243,11 +336,14 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
             <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#ef4444" /></svg>
             Record
           </span>
-          <button
-            className={`btn btn-sm ${profileType === "cpu" ? "btn-primary" : "btn-secondary"}`}
-            onClick={() => setProfileType("cpu")}
-            disabled={profiling}
-          >CPU</button>
+          {recordings.map((p) => (
+            <button
+              key={p.name}
+              className={`btn btn-sm ${profileType === p.name ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => setProfileType(p.name as ProfileType)}
+              disabled={profiling}
+            >{profileLabel(p.name)}</button>
+          ))}
         </div>
 
         <span style={{ color: "var(--border)", fontSize: 18 }}>|</span>
@@ -260,17 +356,39 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
             </svg>
             Snapshot
           </span>
-          {(["heap", "goroutine", "block", "mutex", "all_snapshots"] as ProfileType[]).map((pt) => (
+          {snapshots.map((p) => (
             <button
-              key={pt}
-              className={`btn btn-sm ${profileType === pt ? "btn-primary" : "btn-secondary"}`}
-              onClick={() => setProfileType(pt)}
+              key={p.name}
+              className={`btn btn-sm ${profileType === p.name ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => setProfileType(p.name as ProfileType)}
               disabled={profiling}
-            >
-              {pt === "all_snapshots" ? "All" : pt.charAt(0).toUpperCase() + pt.slice(1)}
-            </button>
+            >{profileLabel(p.name)}</button>
           ))}
+          <button
+            className={`btn btn-sm ${profileType === "all_snapshots" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setProfileType("all_snapshots")}
+            disabled={profiling}
+          >All</button>
         </div>
+
+        {custom.length > 0 && (
+          <>
+            <span style={{ color: "var(--border)", fontSize: 18 }}>|</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Custom
+              </span>
+              {custom.map((p) => (
+                <button
+                  key={p.name}
+                  className={`btn btn-sm ${profileType === p.name ? "btn-primary" : "btn-secondary"}`}
+                  onClick={() => setProfileType(p.name as ProfileType)}
+                  disabled={profiling}
+                >{p.name}{p.count != null ? ` (${p.count})` : ""}</button>
+              ))}
+            </div>
+          </>
+        )}
 
         {isRecording && (
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -320,6 +438,14 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
       {error && <p style={{ color: "var(--danger)", marginTop: 8, fontSize: 13 }}>{error}</p>}
     </div>
   );
+}
+
+const PROFILE_LABELS: Record<string, string> = {
+  cpu: "CPU", trace: "Trace", heap: "Heap", goroutine: "Goroutine",
+  block: "Block", mutex: "Mutex", allocs: "Allocs", threadcreate: "Threads",
+};
+function profileLabel(name: string): string {
+  return PROFILE_LABELS[name] || name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 function formatBytes(bytes: number): string {

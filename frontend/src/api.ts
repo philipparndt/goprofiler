@@ -54,7 +54,7 @@ export interface ProfileDetail extends ProfileMeta {
 }
 
 export interface StartProfileRequest {
-  type: "cpu" | "heap" | "goroutine" | "block" | "mutex" | "all_snapshots";
+  type: "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots";
   durationSec?: number;
 }
 
@@ -105,11 +105,35 @@ export const api = {
   diffProfiles: (baseId: string, compareId: string) =>
     request<ProfileDetail>(`/profiles/diff?base=${baseId}&compare=${compareId}`),
 
+  getProcessInfo: (targetId: string) => request<ProcessInfo>(`/targets/${targetId}/process-info`),
+  getAvailableProfiles: (targetId: string) => request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),
+  getExpvars: (targetId: string) => request<{ timestamp: string; metrics: Record<string, any> }>(`/targets/${targetId}/expvars`),
+  getGoroutineGroups: (targetId: string, top?: number) =>
+    request<GoroutineGroupsResponse>(`/targets/${targetId}/goroutine-groups${top ? `?top=${top}` : ""}`),
+
   getMemStatsHistory: (targetId: string, since?: string) => {
     const qs = since ? `?since=${encodeURIComponent(since)}` : "";
     return request<MemStatsHistory>(`/targets/${targetId}/memstats/history${qs}`);
   },
 };
+
+export interface GoroutineGroupsResponse {
+  total: number;
+  groups: { count: number; state: string; topFrame: string; location: string; stack: string }[];
+}
+
+export interface AvailableProfile {
+  name: string;
+  count?: number;
+  kind: "recording" | "snapshot";
+}
+
+export interface ProcessInfo {
+  cmdline: string[];
+  goVersion?: string;
+  goos?: string;
+  goarch?: string;
+}
 
 export interface MemStatsDataPoint {
   timestamp: string;
@@ -119,6 +143,7 @@ export interface MemStatsDataPoint {
   numGC: number;
   pauseTotalNs: number;
   lastPauseNs: number;
+  numGoroutines: number;
 }
 
 export interface MemStatsGCEvent {

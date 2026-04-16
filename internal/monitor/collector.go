@@ -12,13 +12,14 @@ import (
 const MaxPoints = 300
 
 type DataPoint struct {
-	Timestamp    time.Time `json:"timestamp"`
-	HeapAlloc    uint64    `json:"heapAlloc"`
-	HeapSys      uint64    `json:"heapSys"`
-	Sys          uint64    `json:"sys"`
-	NumGC        uint64    `json:"numGC"`
-	PauseTotalNs uint64    `json:"pauseTotalNs"`
-	LastPauseNs  uint64    `json:"lastPauseNs"`
+	Timestamp     time.Time `json:"timestamp"`
+	HeapAlloc     uint64    `json:"heapAlloc"`
+	HeapSys       uint64    `json:"heapSys"`
+	Sys           uint64    `json:"sys"`
+	NumGC         uint64    `json:"numGC"`
+	PauseTotalNs  uint64    `json:"pauseTotalNs"`
+	LastPauseNs   uint64    `json:"lastPauseNs"`
+	NumGoroutines uint64    `json:"numGoroutines"`
 }
 
 type GCEvent struct {
@@ -165,14 +166,18 @@ func (s *Service) pollOnce(url string) {
 		return // silently skip failed polls
 	}
 
+	// Fetch goroutine count (best-effort, ignore errors)
+	goroutineCount, _ := FetchGoroutineCount(s.client, url)
+
 	point := DataPoint{
-		Timestamp:    ms.Timestamp,
-		HeapAlloc:    ms.HeapAlloc,
-		HeapSys:      ms.HeapSys,
-		Sys:          ms.Sys,
-		NumGC:        ms.NumGC,
-		PauseTotalNs: ms.PauseTotalNs,
-		LastPauseNs:  ms.LastPauseNs,
+		Timestamp:     ms.Timestamp,
+		HeapAlloc:     ms.HeapAlloc,
+		HeapSys:       ms.HeapSys,
+		Sys:           ms.Sys,
+		NumGC:         ms.NumGC,
+		PauseTotalNs:  ms.PauseTotalNs,
+		LastPauseNs:   ms.LastPauseNs,
+		NumGoroutines: goroutineCount,
 	}
 
 	s.mu.RLock()

@@ -13,11 +13,14 @@ import (
 type ProfileType string
 
 const (
-	CPU       ProfileType = "cpu"
-	Heap      ProfileType = "heap"
-	Goroutine ProfileType = "goroutine"
-	Block     ProfileType = "block"
-	Mutex     ProfileType = "mutex"
+	CPU          ProfileType = "cpu"
+	Heap         ProfileType = "heap"
+	Goroutine    ProfileType = "goroutine"
+	Block        ProfileType = "block"
+	Mutex        ProfileType = "mutex"
+	Allocs       ProfileType = "allocs"
+	ThreadCreate ProfileType = "threadcreate"
+	Trace        ProfileType = "trace"
 )
 
 type CollectedProfile struct {
@@ -62,6 +65,28 @@ func (c *Collector) CollectCPU(ctx context.Context, baseURL string, durationSec 
 	}, nil
 }
 
+func (c *Collector) CollectTrace(ctx context.Context, baseURL string, durationSec int) (*CollectedProfile, error) {
+	if durationSec <= 0 {
+		durationSec = 5
+	}
+
+	url := fmt.Sprintf("%s/debug/pprof/trace?seconds=%d", baseURL, durationSec)
+	vlog.Info("starting execution trace", "url", baseURL, "duration", durationSec)
+
+	data, err := c.fetch(ctx, url)
+	if err != nil {
+		return nil, fmt.Errorf("trace collection failed: %w", err)
+	}
+
+	return &CollectedProfile{
+		Type:        Trace,
+		TargetURL:   baseURL,
+		Data:        data,
+		Timestamp:   time.Now(),
+		DurationSec: durationSec,
+	}, nil
+}
+
 func (c *Collector) CollectSnapshot(ctx context.Context, baseURL string, ptype ProfileType) (*CollectedProfile, error) {
 	var endpoint string
 	switch ptype {
@@ -73,6 +98,10 @@ func (c *Collector) CollectSnapshot(ctx context.Context, baseURL string, ptype P
 		endpoint = "/debug/pprof/block"
 	case Mutex:
 		endpoint = "/debug/pprof/mutex"
+	case Allocs:
+		endpoint = "/debug/pprof/allocs"
+	case ThreadCreate:
+		endpoint = "/debug/pprof/threadcreate"
 	default:
 		return nil, fmt.Errorf("unsupported snapshot type: %s", ptype)
 	}

@@ -103,6 +103,8 @@ func init() {
             <tr><td><span className="badge badge-info">Goroutine</span></td><td>Stack traces of all goroutines</td><td className="mono">/debug/pprof/goroutine</td></tr>
             <tr><td><span className="badge badge-info">Block</span></td><td>Blocking synchronization</td><td className="mono">/debug/pprof/block</td></tr>
             <tr><td><span className="badge badge-info">Mutex</span></td><td>Mutex contention</td><td className="mono">/debug/pprof/mutex</td></tr>
+            <tr><td><span className="badge badge-info">Allocs</span></td><td>Cumulative memory allocations (all allocations since start, unlike heap which shows current live objects)</td><td className="mono">/debug/pprof/allocs</td></tr>
+            <tr><td><span className="badge badge-info">Threads</span></td><td>OS thread creation stack traces</td><td className="mono">/debug/pprof/threadcreate</td></tr>
           </tbody>
         </table>
       </div>

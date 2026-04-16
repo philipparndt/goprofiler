@@ -94,6 +94,26 @@ export default function ProfileViewer() {
         </div>
       </div>
 
+      {/* Trace type: show download card instead of flame graph */}
+      {profile.type === "trace" && (
+        <div className="card" style={{ textAlign: "center", padding: 40 }}>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 16 }}>
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <h3 style={{ marginBottom: 8 }}>Execution Trace</h3>
+          <p style={{ color: "var(--text-secondary)", marginBottom: 16, maxWidth: 400, margin: "0 auto 16px" }}>
+            Execution traces capture goroutine scheduling, syscalls, GC events, and network I/O. Download the trace file and open it with Go's trace tool.
+          </p>
+          <button className="btn btn-primary" onClick={() => api.exportProfile(profile.id)} style={{ marginBottom: 16 }}>
+            Download Trace ({formatTraceSize(profile.size)})
+          </button>
+          <div className="code-block" style={{ maxWidth: 400, margin: "0 auto", textAlign: "left" }}>
+            <pre><code>go tool trace {profile.id}.trace</code></pre>
+          </div>
+        </div>
+      )}
+
+      {profile.type !== "trace" && <>
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 0, marginBottom: 16, borderBottom: "1px solid var(--border)" }}>
         <button
@@ -172,8 +192,15 @@ export default function ProfileViewer() {
           onSelectFunction={handleSelectFunction}
         />
       )}
+      </>}
     </div>
   );
+}
+
+function formatTraceSize(bytes: number): string {
+  if (bytes >= 1 << 20) return (bytes / (1 << 20)).toFixed(1) + " MB";
+  if (bytes >= 1 << 10) return (bytes / (1 << 10)).toFixed(1) + " KB";
+  return bytes + " B";
 }
 
 type TopSortKey = "name" | "flat" | "flatPct" | "cum" | "cumPct";

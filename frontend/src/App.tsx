@@ -1,5 +1,5 @@
-import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useState, useCallback } from "react";
 import Dashboard from "./pages/Dashboard";
 import Connections from "./pages/Connections";
 import ConnectionDetail from "./pages/ConnectionDetail";
@@ -8,6 +8,16 @@ import Setup from "./pages/Setup";
 import { api } from "./api";
 import type { Target } from "./api";
 import "./App.css";
+
+// Simple event bus for connection state changes
+const connectionListeners = new Set<() => void>();
+export function refreshSidebar() {
+  connectionListeners.forEach((fn) => fn());
+}
+export function onConnectionChange(fn: () => void) {
+  connectionListeners.add(fn);
+  return () => { connectionListeners.delete(fn); };
+}
 
 function App() {
   return (
@@ -21,6 +31,8 @@ function App() {
             <Route path="/connections/:id" element={<Navigate to="profiling" replace />} />
             <Route path="/connections/:id/profiling" element={<ConnectionDetail />} />
             <Route path="/connections/:id/monitor" element={<ConnectionDetail />} />
+            <Route path="/connections/:id/info" element={<ConnectionDetail />} />
+            <Route path="/connections/:id/expvars" element={<ConnectionDetail />} />
             <Route path="/profiles/:id" element={<ProfileViewer />} />
             <Route path="/setup" element={<Setup />} />
           </Routes>
@@ -31,15 +43,35 @@ function App() {
 }
 
 function Sidebar() {
-  const [targets, setTargets] = useState<Target[]>([]);
+  const [activeTargets, setActiveTargets] = useState<Target[]>([]);
+  const [savedTargets, setSavedTargets] = useState<Target[]>([]);
   const location = useLocation();
+  const navigate = useNavigate();
+
+  const load = useCallback(() => {
+    api.listTargets().then(setActiveTargets).catch(() => {});
+    api.listSavedTargets().then(setSavedTargets).catch(() => {});
+  }, []);
 
   useEffect(() => {
-    const load = () => api.listTargets().then(setTargets).catch(() => {});
     load();
     const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    connectionListeners.add(load);
+    return () => {
+      clearInterval(interval);
+      connectionListeners.delete(load);
+    };
+  }, [load]);
+
+  const allTargets = [...activeTargets, ...savedTargets];
+
+  const handleReconnect = async (id: string) => {
+    try {
+      await api.reconnect(id);
+      refreshSidebar();
+      navigate(`/connections/${id}/profiling`);
+    } catch {}
+  };
 
   return (
     <aside className="sidebar">
@@ -67,12 +99,13 @@ function Sidebar() {
           Connections
         </NavLink>
 
-        {targets.length > 0 && (
+        {allTargets.length > 0 && (
           <div style={{ marginTop: 4 }}>
-            {targets.map((t) => {
+            {allTargets.map((t) => {
               const basePath = `/connections/${t.id}`;
               const isConnectionActive = location.pathname.startsWith(basePath);
               const displayUrl = t.url.replace(/^https?:\/\//, "");
+              const isConnected = t.status === "connected" || t.status === "unreachable";
 
               return (
                 <div key={t.id} style={{ marginBottom: 2 }}>
@@ -92,26 +125,67 @@ function Sidebar() {
                     }}
                   >
                     <span className={`status-dot ${t.status}`} style={{ flexShrink: 0 }} />
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayUrl}</span>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{displayUrl}</span>
+                    {!isConnected && (
+                      <button
+                        onClick={() => handleReconnect(t.id)}
+                        title="Reconnect"
+                        style={{
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          padding: 2,
+                          color: "var(--success)",
+                          flexShrink: 0,
+                          display: "flex",
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
-                  <NavLink
-                    to={`${basePath}/profiling`}
-                    className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M12 20V10M18 20V4M6 20v-4"/>
-                    </svg>
-                    Profiling
-                  </NavLink>
-                  <NavLink
-                    to={`${basePath}/monitor`}
-                    className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-                    </svg>
-                    Monitor
-                  </NavLink>
+                  {isConnected && (
+                    <>
+                      <NavLink
+                        to={`${basePath}/profiling`}
+                        className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 20V10M18 20V4M6 20v-4"/>
+                        </svg>
+                        Profiling
+                      </NavLink>
+                      <NavLink
+                        to={`${basePath}/monitor`}
+                        className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                        </svg>
+                        Monitor
+                      </NavLink>
+                      <NavLink
+                        to={`${basePath}/info`}
+                        className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                        </svg>
+                        Info
+                      </NavLink>
+                      <NavLink
+                        to={`${basePath}/expvars`}
+                        className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/>
+                        </svg>
+                        Expvars
+                      </NavLink>
+                    </>
+                  )}
                 </div>
               );
             })}
