@@ -101,13 +101,24 @@ func (s *Store) SaveProfile(rec *ProfileRecord, data []byte) error {
 	return nil
 }
 
-func (s *Store) ListProfiles(profileType string) ([]ProfileRecord, error) {
+func (s *Store) ListProfiles(profileType, targetURL string) ([]ProfileRecord, error) {
 	query := `SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path FROM profiles`
 	args := []any{}
+	conditions := []string{}
 
 	if profileType != "" {
-		query += " WHERE type = ?"
+		conditions = append(conditions, "type = ?")
 		args = append(args, profileType)
+	}
+	if targetURL != "" {
+		conditions = append(conditions, "target_url = ?")
+		args = append(args, targetURL)
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + conditions[0]
+		for _, c := range conditions[1:] {
+			query += " AND " + c
+		}
 	}
 	query += " ORDER BY timestamp DESC"
 
@@ -126,6 +137,25 @@ func (s *Store) ListProfiles(profileType string) ([]ProfileRecord, error) {
 		profiles = append(profiles, p)
 	}
 	return profiles, rows.Err()
+}
+
+func (s *Store) ProfileCountsByTarget() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT target_url, COUNT(*) FROM profiles GROUP BY target_url`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var url string
+		var count int
+		if err := rows.Scan(&url, &count); err != nil {
+			return nil, err
+		}
+		counts[url] = count
+	}
+	return counts, rows.Err()
 }
 
 func (s *Store) GetProfile(id string) (*ProfileRecord, error) {

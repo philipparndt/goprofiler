@@ -73,7 +73,19 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (h *Handler) listTargets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.connections.List())
+	targets := h.connections.List()
+	counts, _ := h.storage.ProfileCountsByTarget()
+
+	type targetWithCount struct {
+		*connection.Target
+		ProfileCount int `json:"profileCount"`
+	}
+
+	result := make([]targetWithCount, len(targets))
+	for i, t := range targets {
+		result[i] = targetWithCount{Target: t, ProfileCount: counts[t.URL]}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) connectTarget(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +129,19 @@ func (h *Handler) disconnectTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listSavedTargets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.connections.ListSaved())
+	targets := h.connections.ListSaved()
+	counts, _ := h.storage.ProfileCountsByTarget()
+
+	type targetWithCount struct {
+		*connection.Target
+		ProfileCount int `json:"profileCount"`
+	}
+
+	result := make([]targetWithCount, len(targets))
+	for i, t := range targets {
+		result[i] = targetWithCount{Target: t, ProfileCount: counts[t.URL]}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) reconnectTarget(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +283,8 @@ func (h *Handler) cancelProfile(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listProfiles(w http.ResponseWriter, r *http.Request) {
 	typeFilter := r.URL.Query().Get("type")
-	profiles, err := h.storage.ListProfiles(typeFilter)
+	targetFilter := r.URL.Query().Get("target")
+	profiles, err := h.storage.ListProfiles(typeFilter, targetFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

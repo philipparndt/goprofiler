@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Connections from "./pages/Connections";
-import Profiles from "./pages/Profiles";
+import ConnectionDetail from "./pages/ConnectionDetail";
 import ProfileViewer from "./pages/ProfileViewer";
 import Setup from "./pages/Setup";
 import "./App.css";
@@ -34,12 +34,6 @@ function App() {
               </svg>
               Connections
             </NavLink>
-            <NavLink to="/profiles" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 20V10M18 20V4M6 20v-4"/>
-              </svg>
-              Profiles
-            </NavLink>
             <NavLink to="/setup" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
@@ -52,7 +46,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/connections" element={<Connections />} />
-            <Route path="/profiles" element={<Profiles />} />
+            <Route path="/connections/:id" element={<ConnectionDetail />} />
             <Route path="/profiles/:id" element={<ProfileViewer />} />
             <Route path="/setup" element={<Setup />} />
           </Routes>

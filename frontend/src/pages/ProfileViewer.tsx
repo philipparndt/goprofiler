@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "../api";
-import type { ProfileDetail, CallTreeNode } from "../api";
+import type { ProfileDetail, CallTreeNode, TopFunction } from "../api";
 import flamegraph from "d3-flame-graph";
 import { select } from "d3-selection";
 
@@ -68,7 +68,9 @@ export default function ProfileViewer() {
 
   useEffect(() => {
     if (fgRef.current && tab === "flamegraph") {
-      fgRef.current.search(search || "");
+      // Escape regex special chars to avoid "Invalid regular expression" errors
+      const escaped = search ? search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+      fgRef.current.search(escaped);
     }
   }, [search, tab]);
 
@@ -158,33 +160,7 @@ export default function ProfileViewer() {
           </div>
 
           {profile.topFunctions && profile.topFunctions.length > 0 && (
-            <div className="card" style={{ padding: 0 }}>
-              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
-                <span className="card-title">Top Functions</span>
-              </div>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Function</th>
-                    <th>Flat</th>
-                    <th>Flat %</th>
-                    <th>Cum</th>
-                    <th>Cum %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {profile.topFunctions.slice(0, 30).map((fn, i) => (
-                    <tr key={i} style={{ cursor: "pointer" }} onClick={() => handleSelectFunction(fn.name)}>
-                      <td className="mono">{fn.name}</td>
-                      <td className="mono">{fn.flat}</td>
-                      <td className="mono">{fn.flatPercent.toFixed(1)}%</td>
-                      <td className="mono">{fn.cum}</td>
-                      <td className="mono">{fn.cumPercent.toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <TopFunctionsTable functions={profile.topFunctions} onSelect={handleSelectFunction} />
           )}
         </>
       )}
@@ -195,6 +171,65 @@ export default function ProfileViewer() {
           onSelectFunction={handleSelectFunction}
         />
       )}
+    </div>
+  );
+}
+
+type TopSortKey = "name" | "flat" | "flatPct" | "cum" | "cumPct";
+
+function TopFunctionsTable({ functions, onSelect }: {
+  functions: TopFunction[];
+  onSelect: (name: string) => void;
+}) {
+  const [sortKey, setSortKey] = useState<TopSortKey>("cumPct");
+  const [sortAsc, setSortAsc] = useState(false);
+
+  const toggle = (key: TopSortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const ind = (key: TopSortKey) => sortKey === key ? (sortAsc ? " \u25b2" : " \u25bc") : "";
+
+  const sorted = [...functions].sort((a, b) => {
+    let cmp = 0;
+    switch (sortKey) {
+      case "name": cmp = a.name.localeCompare(b.name); break;
+      case "flat": cmp = a.flatPercent - b.flatPercent; break;
+      case "flatPct": cmp = a.flatPercent - b.flatPercent; break;
+      case "cum": cmp = a.cumPercent - b.cumPercent; break;
+      case "cumPct": cmp = a.cumPercent - b.cumPercent; break;
+    }
+    return sortAsc ? cmp : -cmp;
+  });
+
+  return (
+    <div className="card" style={{ padding: 0 }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+        <span className="card-title">Top Functions</span>
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th onClick={() => toggle("name")} style={{ minWidth: 300 }}>Function{ind("name")}</th>
+            <th onClick={() => toggle("flat")} style={{ textAlign: "right", width: 90 }}>Flat{ind("flat")}</th>
+            <th onClick={() => toggle("flatPct")} style={{ textAlign: "right", width: 70 }}>Flat %{ind("flatPct")}</th>
+            <th onClick={() => toggle("cum")} style={{ textAlign: "right", width: 90 }}>Cum{ind("cum")}</th>
+            <th onClick={() => toggle("cumPct")} style={{ textAlign: "right", width: 70 }}>Cum %{ind("cumPct")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.slice(0, 50).map((fn, i) => (
+            <tr key={i} style={{ cursor: "pointer" }} onClick={() => onSelect(fn.name)}>
+              <td className="mono">{fn.name}</td>
+              <td className="mono" style={{ textAlign: "right" }}>{fn.flat}</td>
+              <td className="mono" style={{ textAlign: "right" }}>{fn.flatPercent.toFixed(1)}%</td>
+              <td className="mono" style={{ textAlign: "right" }}>{fn.cum}</td>
+              <td className="mono" style={{ textAlign: "right" }}>{fn.cumPercent.toFixed(1)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

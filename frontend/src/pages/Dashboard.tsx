@@ -46,15 +46,18 @@ export default function Dashboard() {
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Active Connections</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
             {connected.map((t) => (
-              <div key={t.id} className="card" style={{ padding: 16 }}>
+              <Link key={t.id} to={`/connections/${t.id}`} className="card" style={{ padding: 16, textDecoration: "none", color: "inherit", transition: "border-color 0.15s" }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+              >
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <span className="status-dot connected" />
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>{t.url}</span>
+                  <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{t.url}</span>
                 </div>
-                <Link to={`/connections`} className="btn btn-primary btn-sm" style={{ marginTop: 8 }}>
-                  Profile
-                </Link>
-              </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {t.profileCount ?? 0} profile{(t.profileCount ?? 0) !== 1 ? "s" : ""}
+                </div>
+              </Link>
             ))}
           </div>
         </section>
@@ -71,6 +74,7 @@ export default function Dashboard() {
                   <th>Target</th>
                   <th>Timestamp</th>
                   <th>Duration</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -79,7 +83,8 @@ export default function Dashboard() {
                     <td><ProfileTypeBadge type={p.type} /></td>
                     <td className="mono">{p.targetURL}</td>
                     <td>{new Date(p.timestamp).toLocaleString()}</td>
-                    <td>{p.durationSec ? `${p.durationSec}s` : "snapshot"}</td>
+                    <td>{p.durationSec ? `${p.durationSec}s` : "instant"}</td>
+                    <td><Link to={`/profiles/${p.id}`} className="btn btn-primary btn-sm">View</Link></td>
                   </tr>
                 ))}
               </tbody>

@@ -7,6 +7,7 @@ export interface Target {
   lastCheck?: string;
   lastConnected?: string;
   label?: string;
+  profileCount?: number;
 }
 
 export interface ProfileMeta {
@@ -86,8 +87,13 @@ export const api = {
   cancelProfile: (targetId: string) =>
     request<void>(`/targets/${targetId}/profiles/active`, { method: "DELETE" }),
 
-  listProfiles: (type?: string) =>
-    request<ProfileMeta[]>(`/profiles${type ? `?type=${type}` : ""}`),
+  listProfiles: (opts?: { type?: string; target?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set("type", opts.type);
+    if (opts?.target) params.set("target", opts.target);
+    const qs = params.toString();
+    return request<ProfileMeta[]>(`/profiles${qs ? `?${qs}` : ""}`);
+  },
   getProfile: (id: string) => request<ProfileDetail>(`/profiles/${id}`),
   deleteProfile: (id: string) => request<void>(`/profiles/${id}`, { method: "DELETE" }),
   updateLabel: (id: string, label: string) =>
