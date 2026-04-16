@@ -70,6 +70,23 @@ func init() {
         </p>
       </div>
 
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>5. Understanding "Samples" vs "Invocations"</h2>
+        <p style={{ color: "var(--text-secondary)", marginBottom: 12 }}>
+          Go uses <strong>sampling-based profiling</strong>, not instrumentation. The profiler periodically interrupts your program and records the current call stack. This means:
+        </p>
+        <ul style={{ color: "var(--text-secondary)", paddingLeft: 20, display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+          <li>The <strong>"Samples"</strong> column in the call tree shows how many times the profiler caught a function on the stack -- not the exact number of times it was called.</li>
+          <li><strong>CPU time</strong> values are statistical estimates based on sample frequency (e.g., at 100 Hz, each sample represents ~10ms).</li>
+          <li>Functions that run for less than one sampling interval may not appear at all.</li>
+          <li><strong>Heap profiling</strong> also samples: by default it records 1 in every 524,288 bytes allocated (<code style={{ color: "var(--accent)" }}>runtime.MemProfileRate</code>).</li>
+          <li><strong>Goroutine, Block, and Mutex</strong> profiles are event-based and exact.</li>
+        </ul>
+        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>
+          Sampling is lightweight (typically {"<"}5% overhead) and statistically representative for hot paths. Go does not offer an instrumentation-based profiler like JProfiler does for the JVM.
+        </p>
+      </div>
+
       <div className="card">
         <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Available Profile Types</h2>
         <table className="table">
