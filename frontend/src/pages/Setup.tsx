@@ -4,7 +4,7 @@ export default function Setup() {
   return (
     <div>
       <div className="page-header">
-        <h1>Setup Guide</h1>
+        <h1>Quick Start</h1>
         <p>Enable pprof in your Go application to start profiling</p>
       </div>
 

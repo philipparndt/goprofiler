@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import type { TraceData } from "../../api";
 
 interface Props {
@@ -17,7 +17,7 @@ interface SpanDetail {
 }
 
 const ROW_HEIGHT = 24;
-const LABEL_WIDTH = 180;
+const DEFAULT_LABEL_WIDTH = 180;
 const TIME_AXIS_HEIGHT = 28;
 const MINIMAP_HEIGHT = 40;
 const MINIMAP_PADDING = 6; // vertical padding inside minimap rows
@@ -67,6 +67,11 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   const [scrollTop, setScrollTop] = useState(0);
   const [selectedSpan, setSelectedSpan] = useState<SpanDetail | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [labelWidth, setLabelWidth] = useState(DEFAULT_LABEL_WIDTH);
+  const [isResizingLabel, setIsResizingLabel] = useState(false);
+  const labelWidthRef = useRef(DEFAULT_LABEL_WIDTH);
+  const [hiddenStates, setHiddenStates] = useState<Set<string>>(new Set());
+  const hiddenStatesRef = useRef<Set<string>>(new Set());
   const [isMinimapDragging, setIsMinimapDragging] = useState(false);
 
   // Stable refs so event handlers don't go stale
@@ -76,7 +81,13 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   const dragRef = useRef<{ startX: number; startViewStart: number; startViewEnd: number } | null>(null);
   const minimapDragRef = useRef<{ startX: number } | null>(null);
 
-  const goroutines = data.goroutines;
+  // Filter goroutines: only show those with at least one visible span
+  const goroutines = useMemo(() =>
+    data.goroutines.filter((g) =>
+      g.spans.some((s) => !hiddenStates.has(s.state))
+    ),
+    [data.goroutines, hiddenStates]
+  );
   const totalRows = goroutines.length;
   const totalContentHeight = totalRows * ROW_HEIGHT;
 
@@ -108,12 +119,12 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     ctx.stroke();
 
     const timeRange = traceEndNs - traceStartNs || 1;
-    const drawW = W - LABEL_WIDTH;
+    const drawW = W - labelWidthRef.current;
 
     // GC bands
     for (const gc of data.gcEvents) {
-      const x0 = LABEL_WIDTH + ((gc.start - traceStartNs) / timeRange) * drawW;
-      const x1 = LABEL_WIDTH + ((gc.end - traceStartNs) / timeRange) * drawW;
+      const x0 = labelWidthRef.current + ((gc.start - traceStartNs) / timeRange) * drawW;
+      const x1 = labelWidthRef.current + ((gc.end - traceStartNs) / timeRange) * drawW;
       ctx.fillStyle = "rgba(239,68,68,0.2)";
       ctx.fillRect(x0, 0, Math.max(x1 - x0, 1), H);
     }
@@ -124,8 +135,9 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
       const g = goroutines[i];
       const y = MINIMAP_PADDING + i * rowH;
       for (const span of g.spans) {
-        const x0 = LABEL_WIDTH + ((span.start - traceStartNs) / timeRange) * drawW;
-        const x1 = LABEL_WIDTH + ((span.end - traceStartNs) / timeRange) * drawW;
+        if (hiddenStatesRef.current.has(span.state)) continue;
+        const x0 = labelWidthRef.current + ((span.start - traceStartNs) / timeRange) * drawW;
+        const x1 = labelWidthRef.current + ((span.end - traceStartNs) / timeRange) * drawW;
         const w = Math.max(x1 - x0, 0.5);
         ctx.fillStyle = STATE_COLORS[span.state] ?? STATE_COLORS.waiting;
         ctx.globalAlpha = 0.7;
@@ -135,8 +147,8 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     ctx.globalAlpha = 1;
 
     // Viewport rectangle
-    const vx0 = LABEL_WIDTH + ((viewRef.current.viewStartNs - traceStartNs) / timeRange) * drawW;
-    const vx1 = LABEL_WIDTH + ((viewRef.current.viewEndNs - traceStartNs) / timeRange) * drawW;
+    const vx0 = labelWidthRef.current + ((viewRef.current.viewStartNs - traceStartNs) / timeRange) * drawW;
+    const vx1 = labelWidthRef.current + ((viewRef.current.viewEndNs - traceStartNs) / timeRange) * drawW;
     ctx.fillStyle = "rgba(99,102,241,0.15)";
     ctx.fillRect(vx0, 0, Math.max(vx1 - vx0, 2), H);
     ctx.strokeStyle = "#6366f1";
@@ -145,7 +157,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
 
     // Label area background
     ctx.fillStyle = "#12121a";
-    ctx.fillRect(0, 0, LABEL_WIDTH, H);
+    ctx.fillRect(0, 0, labelWidthRef.current, H);
     ctx.fillStyle = "#5a5a6e";
     ctx.font = `10px 'JetBrains Mono', monospace`;
     ctx.textAlign = "left";
@@ -170,7 +182,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
 
     const { viewStartNs: vsNs, viewEndNs: veNs, scrollTop: st } = viewRef.current;
     const viewRange = veNs - vsNs || 1;
-    const drawW = W - LABEL_WIDTH;
+    const drawW = W - labelWidthRef.current;
 
     // Background
     ctx.fillStyle = "#0a0a0f";
@@ -182,7 +194,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     ctx.strokeStyle = "#2a2a3a";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(LABEL_WIDTH, TIME_AXIS_HEIGHT - 0.5);
+    ctx.moveTo(labelWidthRef.current, TIME_AXIS_HEIGHT - 0.5);
     ctx.lineTo(W, TIME_AXIS_HEIGHT - 0.5);
     ctx.stroke();
 
@@ -197,7 +209,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     ctx.textBaseline = "middle";
 
     for (let t = firstTick; t <= veNs; t += tickInterval) {
-      const x = LABEL_WIDTH + ((t - vsNs) / viewRange) * drawW;
+      const x = labelWidthRef.current + ((t - vsNs) / viewRange) * drawW;
       ctx.strokeStyle = "#1f1f2e";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -218,11 +230,11 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
 
     // GC bands (behind rows)
     for (const gc of data.gcEvents) {
-      const x0 = LABEL_WIDTH + ((gc.start - vsNs) / viewRange) * drawW;
-      const x1 = LABEL_WIDTH + ((gc.end - vsNs) / viewRange) * drawW;
-      if (x1 < LABEL_WIDTH || x0 > W) continue;
+      const x0 = labelWidthRef.current + ((gc.start - vsNs) / viewRange) * drawW;
+      const x1 = labelWidthRef.current + ((gc.end - vsNs) / viewRange) * drawW;
+      if (x1 < labelWidthRef.current || x0 > W) continue;
       ctx.fillStyle = "rgba(239,68,68,0.15)";
-      ctx.fillRect(Math.max(x0, LABEL_WIDTH), TIME_AXIS_HEIGHT, Math.min(x1, W) - Math.max(x0, LABEL_WIDTH), H - TIME_AXIS_HEIGHT);
+      ctx.fillRect(Math.max(x0, labelWidthRef.current), TIME_AXIS_HEIGHT, Math.min(x1, W) - Math.max(x0, labelWidthRef.current), H - TIME_AXIS_HEIGHT);
     }
 
     // Visible goroutine rows
@@ -238,19 +250,19 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
 
       // Row background (alternating)
       ctx.fillStyle = i % 2 === 0 ? "#0a0a0f" : "#0d0d14";
-      ctx.fillRect(LABEL_WIDTH, rowY, drawW, ROW_HEIGHT);
+      ctx.fillRect(labelWidthRef.current, rowY, drawW, ROW_HEIGHT);
 
       // Row separator
       ctx.strokeStyle = "#1a1a25";
       ctx.lineWidth = 0.5;
       ctx.beginPath();
-      ctx.moveTo(LABEL_WIDTH, rowY + ROW_HEIGHT - 0.5);
+      ctx.moveTo(labelWidthRef.current, rowY + ROW_HEIGHT - 0.5);
       ctx.lineTo(W, rowY + ROW_HEIGHT - 0.5);
       ctx.stroke();
 
       // Label area background
       ctx.fillStyle = "#0d0d14";
-      ctx.fillRect(0, rowY, LABEL_WIDTH, ROW_HEIGHT);
+      ctx.fillRect(0, rowY, labelWidthRef.current, ROW_HEIGHT);
 
       // Label text
       ctx.fillStyle = "#9898a8";
@@ -260,7 +272,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
       // Clip label to label width
       ctx.save();
       ctx.beginPath();
-      ctx.rect(4, rowY, LABEL_WIDTH - 8, ROW_HEIGHT);
+      ctx.rect(4, rowY, labelWidthRef.current - 8, ROW_HEIGHT);
       ctx.clip();
       ctx.fillText(label, 4, rowY + ROW_HEIGHT / 2);
       ctx.restore();
@@ -270,12 +282,13 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
       const spanY = rowY + 2;
 
       for (const span of g.spans) {
-        // Skip completely out of view
+        // Skip hidden states or completely out of view
+        if (hiddenStatesRef.current.has(span.state)) continue;
         if (span.end < vsNs || span.start > veNs) continue;
 
-        const x0 = LABEL_WIDTH + ((span.start - vsNs) / viewRange) * drawW;
-        const x1 = LABEL_WIDTH + ((span.end - vsNs) / viewRange) * drawW;
-        const clampedX0 = Math.max(x0, LABEL_WIDTH);
+        const x0 = labelWidthRef.current + ((span.start - vsNs) / viewRange) * drawW;
+        const x1 = labelWidthRef.current + ((span.end - vsNs) / viewRange) * drawW;
+        const clampedX0 = Math.max(x0, labelWidthRef.current);
         const clampedX1 = Math.min(x1, W);
         const w = clampedX1 - clampedX0;
         if (w < 0.3) continue;
@@ -306,13 +319,13 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     ctx.strokeStyle = "#2a2a3a";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(LABEL_WIDTH - 0.5, TIME_AXIS_HEIGHT);
-    ctx.lineTo(LABEL_WIDTH - 0.5, H);
+    ctx.moveTo(labelWidthRef.current - 0.5, TIME_AXIS_HEIGHT);
+    ctx.lineTo(labelWidthRef.current - 0.5, H);
     ctx.stroke();
 
     // Label column header
     ctx.fillStyle = "#12121a";
-    ctx.fillRect(0, 0, LABEL_WIDTH, TIME_AXIS_HEIGHT);
+    ctx.fillRect(0, 0, labelWidthRef.current, TIME_AXIS_HEIGHT);
     ctx.fillStyle = "#5a5a6e";
     ctx.font = `10px 'JetBrains Mono', monospace`;
     ctx.textAlign = "left";
@@ -324,7 +337,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   useEffect(() => {
     drawTimeline();
     drawMinimap();
-  }, [viewStartNs, viewEndNs, scrollTop, drawTimeline, drawMinimap]);
+  }, [viewStartNs, viewEndNs, scrollTop, labelWidth, hiddenStates, drawTimeline, drawMinimap]);
 
   // ─── Resize observer ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -376,8 +389,8 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
 
     // Zoom centered on cursor
     const cursorX = e.clientX - rect.left;
-    const drawW = rect.width - LABEL_WIDTH;
-    const cursorFrac = Math.max(0, Math.min(1, (cursorX - LABEL_WIDTH) / drawW));
+    const drawW = rect.width - labelWidthRef.current;
+    const cursorFrac = Math.max(0, Math.min(1, (cursorX - labelWidthRef.current) / drawW));
     const cursorNs = vsNs + cursorFrac * viewRange;
 
     const zoomFactor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
@@ -414,7 +427,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     const canvas = mainCanvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const drawW = rect.width - LABEL_WIDTH;
+    const drawW = rect.width - labelWidthRef.current;
     if (drawW <= 0) return;
 
     const dx = e.clientX - dragRef.current.startX;
@@ -441,13 +454,13 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
       const rect = canvas.getBoundingClientRect();
       const { viewStartNs: vsNs, viewEndNs: veNs, scrollTop: st } = viewRef.current;
       const viewRange = veNs - vsNs;
-      const drawW = rect.width - LABEL_WIDTH;
+      const drawW = rect.width - labelWidthRef.current;
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      if (mouseX < LABEL_WIDTH || mouseY < TIME_AXIS_HEIGHT) return;
+      if (mouseX < labelWidthRef.current || mouseY < TIME_AXIS_HEIGHT) return;
 
-      const clickNs = vsNs + ((mouseX - LABEL_WIDTH) / drawW) * viewRange;
+      const clickNs = vsNs + ((mouseX - labelWidthRef.current) / drawW) * viewRange;
       const rowIdx = Math.floor((mouseY - TIME_AXIS_HEIGHT + st) / ROW_HEIGHT);
       if (rowIdx < 0 || rowIdx >= goroutines.length) return;
 
@@ -484,8 +497,8 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     const canvas = minimapCanvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const drawW = rect.width - LABEL_WIDTH;
-    const mouseX = e.clientX - rect.left - LABEL_WIDTH;
+    const drawW = rect.width - labelWidthRef.current;
+    const mouseX = e.clientX - rect.left - labelWidthRef.current;
     const frac = Math.max(0, Math.min(1, mouseX / drawW));
     const timeRange = traceEndNs - traceStartNs;
     const { viewStartNs: vsNs, viewEndNs: veNs } = viewRef.current;
@@ -504,10 +517,10 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     const canvas = minimapCanvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const drawW = rect.width - LABEL_WIDTH;
+    const drawW = rect.width - labelWidthRef.current;
     if (drawW <= 0) return;
 
-    const mouseX = e.clientX - rect.left - LABEL_WIDTH;
+    const mouseX = e.clientX - rect.left - labelWidthRef.current;
     const frac = Math.max(0, Math.min(1, mouseX / drawW));
     const timeRange = traceEndNs - traceStartNs;
     const { viewStartNs: vsNs, viewEndNs: veNs } = viewRef.current;
@@ -531,12 +544,26 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     const up = () => {
       setIsDragging(false);
       setIsMinimapDragging(false);
+      setIsResizingLabel(false);
       dragRef.current = null;
       minimapDragRef.current = null;
     };
+    const move = (e: MouseEvent) => {
+      if (!isResizingLabel) return;
+      const canvas = mainCanvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const newWidth = Math.max(80, Math.min(600, e.clientX - rect.left));
+      labelWidthRef.current = newWidth;
+      setLabelWidth(newWidth);
+    };
     window.addEventListener("mouseup", up);
-    return () => window.removeEventListener("mouseup", up);
-  }, []);
+    window.addEventListener("mousemove", move);
+    return () => {
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("mousemove", move);
+    };
+  }, [isResizingLabel]);
 
   // ─── Reset zoom ───────────────────────────────────────────────────────────
   const resetZoom = () => {
@@ -580,25 +607,53 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
         borderBottom: "1px solid var(--border)",
         flexWrap: "wrap",
       }}>
-        <button className="btn btn-secondary btn-sm" onClick={zoomIn}>Zoom In</button>
-        <button className="btn btn-secondary btn-sm" onClick={zoomOut}>Zoom Out</button>
-        <button className="btn btn-secondary btn-sm" onClick={resetZoom}>Reset</button>
+        <button className="btn btn-secondary btn-sm" onClick={zoomIn} title="Zoom In" style={{ padding: "5px 8px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={zoomOut} title="Zoom Out" style={{ padding: "5px 8px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={resetZoom} title="Reset Zoom" style={{ padding: "5px 8px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
         <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
-          View: {formatNs(viewStartNs)} – {formatNs(viewEndNs)}
-          &nbsp;&nbsp;Range: {formatNs(viewRange)}
+          {formatNs(viewRange)}
         </span>
-        <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: "auto" }}>
-          Scroll to zoom · Drag to pan · Ctrl+scroll to zoom
-        </span>
-        {/* Legend */}
-        <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 11, color: "var(--text-secondary)" }}>
-          {Object.entries(STATE_COLORS).map(([state, color]) => (
-            <span key={state} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 2, background: color, display: "inline-block" }} />
-              {state}
-            </span>
-          ))}
-          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        {/* State filter toggles */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, marginLeft: "auto" }}>
+          {Object.entries(STATE_COLORS).map(([state, color]) => {
+            const isHidden = hiddenStates.has(state);
+            return (
+              <button
+                key={state}
+                onClick={() => {
+                  const next = new Set(hiddenStates);
+                  if (next.has(state)) next.delete(state); else next.add(state);
+                  hiddenStatesRef.current = next;
+                  setHiddenStates(next);
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 4,
+                  background: "none", border: "none", cursor: "pointer", padding: "2px 6px",
+                  borderRadius: 4,
+                  opacity: isHidden ? 0.35 : 1,
+                  color: "var(--text-secondary)",
+                  textDecoration: isHidden ? "line-through" : "none",
+                }}
+                title={isHidden ? `Show ${state}` : `Hide ${state}`}
+              >
+                <span style={{ width: 10, height: 10, borderRadius: 2, background: color, display: "inline-block" }} />
+                {state}
+              </button>
+            );
+          })}
+          <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text-secondary)" }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: "rgba(239,68,68,0.35)", border: "1px solid #ef4444", display: "inline-block" }} />
             GC
           </span>
@@ -621,21 +676,39 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
         onMouseLeave={handleMinimapMouseUp}
       />
 
-      {/* Main canvas */}
-      <canvas
-        ref={mainCanvasRef}
-        style={{
-          width: "100%",
-          flex: 1,
-          display: "block",
-          cursor: isDragging ? "grabbing" : "default",
-          minHeight: 300,
-        }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={() => { if (isDragging) { setIsDragging(false); dragRef.current = null; } }}
-      />
+      {/* Main canvas with resize handle */}
+      <div style={{ position: "relative", flex: 1, minHeight: 300 }}>
+        <canvas
+          ref={mainCanvasRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "block",
+            cursor: isDragging ? "grabbing" : "default",
+          }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={() => { if (isDragging) { setIsDragging(false); dragRef.current = null; } }}
+        />
+        {/* Label column resize handle */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: labelWidth - 2,
+            width: 5,
+            height: "100%",
+            cursor: "col-resize",
+            zIndex: 10,
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsResizingLabel(true);
+          }}
+        />
+      </div>
 
       {/* Span detail panel */}
       {selectedSpan && (

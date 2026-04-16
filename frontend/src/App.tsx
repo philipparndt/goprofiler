@@ -77,9 +77,25 @@ function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="logo">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="2" y="2" width="20" height="20" rx="4" fill="var(--accent)" fillOpacity="0.2" stroke="var(--accent)" strokeWidth="1.5"/>
-            <path d="M7 17V10M12 17V7M17 17V13" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"/>
+          <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="sidebar-bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#16162a"/>
+                <stop offset="100%" stopColor="#1a1a2e"/>
+              </linearGradient>
+              <linearGradient id="sidebar-flame" x1="0" y1="1" x2="0.3" y2="0">
+                <stop offset="0%" stopColor="#6366f1"/>
+                <stop offset="60%" stopColor="#8b5cf6"/>
+                <stop offset="100%" stopColor="#22c55e"/>
+              </linearGradient>
+              <linearGradient id="sidebar-border" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#6366f1" stopOpacity="0.6"/>
+                <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.3"/>
+              </linearGradient>
+            </defs>
+            <rect x="1" y="1" width="30" height="30" rx="7" fill="url(#sidebar-bg)" stroke="url(#sidebar-border)" strokeWidth="1.2"/>
+            <path d="M5 25 V22 C6 22 7 19 8 17 C9 15 9.5 18 10.5 14 C11.5 10 12 13 13 9 C14 5 14.5 7 15.5 4 C16.5 7 17 5 18 8 C19 11 19.5 7 20.5 10 C21.5 13 22 11 23 14 C24 17 24.5 15 25.5 18 C26.5 21 27 19 27 22 V25 Z" fill="url(#sidebar-flame)" opacity="0.9"/>
+            <path d="M5 22 C6 22 7 19 8 17 C9 15 9.5 18 10.5 14 C11.5 10 12 13 13 9 C14 5 14.5 7 15.5 4 C16.5 7 17 5 18 8 C19 11 19.5 7 20.5 10 C21.5 13 22 11 23 14 C24 17 24.5 15 25.5 18 C26.5 21 27 19 27 22" fill="none" stroke="#a78bfa" strokeWidth="0.8" opacity="0.6"/>
           </svg>
           <span>GoProfiler</span>
         </div>
@@ -197,7 +213,7 @@ function Sidebar() {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
             </svg>
-            Setup
+            Quick Start
           </NavLink>
         </div>
       </nav>
