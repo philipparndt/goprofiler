@@ -22,15 +22,24 @@ import (
 	"github.com/philipparndt/goprofiler/internal/storage"
 )
 
+type recordingState struct {
+	cancel    context.CancelFunc
+	done      chan struct{}
+	profileID string
+	err       error
+	ptype     string
+}
+
 type Handler struct {
 	connections *connection.Store
 	storage     *storage.Store
 	collector   *profiler.Collector
 	monitor     *monitor.Service
 
-	mu           sync.Mutex
-	activeCancel map[string]context.CancelFunc
-	traceCache   map[string]*traceparser.TraceData
+	mu              sync.Mutex
+	activeCancel    map[string]context.CancelFunc
+	activeRecording map[string]*recordingState
+	traceCache      map[string]*traceparser.TraceData
 }
 
 func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service) *Handler {
@@ -39,8 +48,9 @@ func NewHandler(connections *connection.Store, storage *storage.Store, monitorSv
 		storage:      storage,
 		collector:    profiler.NewCollector(),
 		monitor:      monitorSvc,
-		activeCancel: make(map[string]context.CancelFunc),
-		traceCache:   make(map[string]*traceparser.TraceData),
+		activeCancel:    make(map[string]context.CancelFunc),
+		activeRecording: make(map[string]*recordingState),
+		traceCache:      make(map[string]*traceparser.TraceData),
 	}
 }
 
@@ -52,6 +62,8 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/", h.connectTarget)
 		r.Delete("/{id}", h.disconnectTarget)
 		r.Post("/{id}/profiles", h.startProfile)
+		r.Get("/{id}/profiles/active", h.getRecordingStatus)
+		r.Post("/{id}/profiles/stop", h.stopRecording)
 		r.Delete("/{id}/profiles/active", h.cancelProfile)
 		r.Get("/{id}/memstats/history", h.getMemStatsHistory)
 		r.Get("/{id}/process-info", h.getProcessInfo)
@@ -70,9 +82,12 @@ func (h *Handler) Routes() chi.Router {
 		r.Get("/{id}", h.getProfile)
 		r.Delete("/{id}", h.deleteProfile)
 		r.Put("/{id}/label", h.updateLabel)
+		r.Put("/{id}/tags", h.setTags)
 		r.Get("/{id}/raw", h.exportProfile)
 		r.Get("/{id}/trace-data", h.getTraceData)
 	})
+
+	r.Get("/tags", h.listTags)
 
 	return r
 }
@@ -223,35 +238,57 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 
 	if ptype == profiler.CPU || ptype == profiler.Trace {
 		ctx, cancel := context.WithCancel(context.Background())
+
+		rs := &recordingState{
+			cancel: cancel,
+			done:   make(chan struct{}),
+			ptype:  string(ptype),
+		}
+
 		h.mu.Lock()
 		h.activeCancel[targetID] = cancel
+		h.activeRecording[targetID] = rs
 		h.mu.Unlock()
 
-		defer func() {
-			h.mu.Lock()
-			delete(h.activeCancel, targetID)
-			h.mu.Unlock()
+		// Run recording in background goroutine
+		go func() {
+			defer close(rs.done)
+
+			var collected *profiler.CollectedProfile
+			var err error
+			if ptype == profiler.Trace {
+				collected, err = h.collector.CollectTrace(ctx, target.URL, req.DurationSec)
+			} else {
+				collected, err = h.collector.CollectCPU(ctx, target.URL, req.DurationSec)
+			}
+
+			if err != nil {
+				// Check if we got data despite the error (context cancellation with partial data)
+				if collected != nil && len(collected.Data) > 0 {
+					// Save partial data
+					if rec, saveErr := h.saveCollected(collected); saveErr == nil {
+						rs.profileID = rec.ID
+					} else {
+						rs.err = saveErr
+					}
+				} else {
+					rs.err = err
+				}
+				return
+			}
+
+			rec, err := h.saveCollected(collected)
+			if err != nil {
+				rs.err = err
+				return
+			}
+			rs.profileID = rec.ID
 		}()
 
-		var collected *profiler.CollectedProfile
-		var err error
-		if ptype == profiler.Trace {
-			collected, err = h.collector.CollectTrace(ctx, target.URL, req.DurationSec)
-		} else {
-			collected, err = h.collector.CollectCPU(ctx, target.URL, req.DurationSec)
-		}
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err.Error())
-			return
-		}
-
-		rec, err := h.saveCollected(collected)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		writeJSON(w, http.StatusOK, rec)
+		writeJSON(w, http.StatusAccepted, map[string]string{
+			"status": "recording",
+			"type":   string(ptype),
+		})
 		return
 	}
 
@@ -291,6 +328,7 @@ func (h *Handler) cancelProfile(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		cancel()
 		delete(h.activeCancel, targetID)
+		delete(h.activeRecording, targetID)
 	}
 	h.mu.Unlock()
 
@@ -300,6 +338,89 @@ func (h *Handler) cancelProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) getRecordingStatus(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	h.mu.Lock()
+	rs, ok := h.activeRecording[targetID]
+	h.mu.Unlock()
+
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "idle"})
+		return
+	}
+
+	select {
+	case <-rs.done:
+		// Recording finished
+		h.mu.Lock()
+		delete(h.activeCancel, targetID)
+		delete(h.activeRecording, targetID)
+		h.mu.Unlock()
+
+		if rs.err != nil {
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status": "failed",
+				"error":  rs.err.Error(),
+			})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status":    "done",
+				"profileId": rs.profileID,
+			})
+		}
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "recording",
+			"type":   rs.ptype,
+		})
+	}
+}
+
+func (h *Handler) stopRecording(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	h.mu.Lock()
+	rs, ok := h.activeRecording[targetID]
+	cancel, hasCancel := h.activeCancel[targetID]
+	h.mu.Unlock()
+
+	if !ok {
+		writeError(w, http.StatusNotFound, "no active recording")
+		return
+	}
+
+	// Cancel the pprof request to stop early
+	if hasCancel {
+		cancel()
+	}
+
+	// Wait for the goroutine to finish (it may save partial data)
+	<-rs.done
+
+	h.mu.Lock()
+	delete(h.activeCancel, targetID)
+	delete(h.activeRecording, targetID)
+	h.mu.Unlock()
+
+	if rs.profileID != "" {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":    "done",
+			"profileId": rs.profileID,
+		})
+	} else if rs.err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "no_data",
+			"error":  "Recording stopped but no data was captured. Try a longer recording.",
+		})
+	} else {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "no_data",
+			"error":  "No data captured",
+		})
+	}
 }
 
 func (h *Handler) getMemStatsHistory(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +512,8 @@ func (h *Handler) getAvailableProfiles(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listProfiles(w http.ResponseWriter, r *http.Request) {
 	typeFilter := r.URL.Query().Get("type")
 	targetFilter := r.URL.Query().Get("target")
-	profiles, err := h.storage.ListProfiles(typeFilter, targetFilter)
+	tagFilter := r.URL.Query().Get("tag")
+	profiles, err := h.storage.ListProfiles(typeFilter, targetFilter, tagFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -439,6 +561,11 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Apply pprof overhead filter if requested
+	if r.URL.Query().Get("filter") == "pprof" {
+		flamegraph.FilterPprofOverhead(prof)
+	}
+
 	result := flamegraph.Convert(prof)
 	callTree := flamegraph.BuildCallTree(prof)
 
@@ -453,6 +580,24 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 		"flameGraph":   result.FlameGraph,
 		"topFunctions": result.TopFunctions,
 		"callTree":     callTree,
+	}
+
+	// For heap-like profiles, add summary with inuse and alloc totals
+	if len(prof.SampleType) >= 4 {
+		summary := map[string]int64{}
+		for _, s := range prof.Sample {
+			for i, st := range prof.SampleType {
+				if i < len(s.Value) {
+					summary[st.Type] += s.Value[i]
+				}
+			}
+		}
+		resp["heapSummary"] = map[string]any{
+			"inuseObjects": summary["inuse_objects"],
+			"inuseSpace":   summary["inuse_space"],
+			"allocObjects": summary["alloc_objects"],
+			"allocSpace":   summary["alloc_space"],
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -481,6 +626,35 @@ func (h *Handler) updateLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) setTags(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	tagsJSON, _ := json.Marshal(req.Tags)
+	if err := h.storage.SetTags(id, string(tagsJSON)); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
+	tags, err := h.storage.ListAllTags()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	writeJSON(w, http.StatusOK, tags)
 }
 
 func (h *Handler) getTraceData(w http.ResponseWriter, r *http.Request) {
@@ -594,10 +768,23 @@ func (h *Handler) diffProfiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := flamegraph.Convert(merged)
+	callTree := flamegraph.BuildCallTree(merged)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	baseRec, _ := h.storage.GetProfile(baseID)
+	compareRec, _ := h.storage.GetProfile(compareID)
+
+	resp := map[string]any{
 		"flameGraph":   result.FlameGraph,
 		"topFunctions": result.TopFunctions,
+		"callTree":     callTree,
 		"type":         "diff",
-	})
+	}
+	if baseRec != nil {
+		resp["base"] = baseRec
+	}
+	if compareRec != nil {
+		resp["compare"] = compareRec
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }

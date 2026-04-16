@@ -4,6 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import Connections from "./pages/Connections";
 import ConnectionDetail from "./pages/ConnectionDetail";
 import ProfileViewer from "./pages/ProfileViewer";
+import DiffViewer from "./pages/DiffViewer";
 import Setup from "./pages/Setup";
 import { api } from "./api";
 import type { Target } from "./api";
@@ -33,6 +34,7 @@ function App() {
             <Route path="/connections/:id/monitor" element={<ConnectionDetail />} />
             <Route path="/connections/:id/info" element={<ConnectionDetail />} />
             <Route path="/connections/:id/expvars" element={<ConnectionDetail />} />
+            <Route path="/profiles/diff" element={<DiffViewer />} />
             <Route path="/profiles/:id" element={<ProfileViewer />} />
             <Route path="/setup" element={<Setup />} />
           </Routes>

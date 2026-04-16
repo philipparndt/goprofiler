@@ -18,14 +18,19 @@ export default function ProfileViewer() {
   const [, setSelectedFn] = useState("");
   const [colorMode, setColorMode] = useState<"package" | "heat">("package");
   const [inverted, setInverted] = useState(false);
+  const [filterPprof, setFilterPprof] = useState(true);
   const chartRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
 
-  useEffect(() => {
-    if (id) {
-      api.getProfile(id).then(setProfile).catch(() => {});
-    }
-  }, [id]);
+  const isHeapLike = profile?.type === "heap" || profile?.type === "allocs";
+
+  const loadProfile = () => {
+    if (!id) return;
+    const filter = filterPprof ? "pprof" : undefined;
+    api.getProfile(id, filter).then(setProfile).catch(() => {});
+  };
+
+  useEffect(() => { loadProfile(); }, [id, filterPprof]);
 
   useEffect(() => {
     if (!profile || !chartRef.current || tab !== "flamegraph") return;
@@ -94,6 +99,45 @@ export default function ProfileViewer() {
           <p>{profile.targetURL} &middot; {new Date(profile.timestamp).toLocaleString()}{profile.durationSec ? ` \u00b7 ${profile.durationSec}s` : ""}</p>
         </div>
       </div>
+
+      {/* Heap summary bar */}
+      {(profile as any).heapSummary && (
+        <div className="card" style={{ marginBottom: 16, padding: "12px 16px", display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+          <HeapStat label="In Use" value={(profile as any).heapSummary.inuseSpace} objects={(profile as any).heapSummary.inuseObjects} accent="var(--success)" />
+          <HeapStat label="Total Allocated" value={(profile as any).heapSummary.allocSpace} objects={(profile as any).heapSummary.allocObjects} accent="var(--accent)" />
+          <label
+            style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "var(--text-secondary)", marginLeft: "auto" }}
+            title="Filter out pprof infrastructure overhead (runtime/pprof, text/tabwriter, etc.)"
+          >
+            <span
+              onClick={() => setFilterPprof(!filterPprof)}
+              style={{
+                width: 36,
+                height: 20,
+                borderRadius: 10,
+                background: filterPprof ? "var(--accent)" : "var(--border)",
+                position: "relative",
+                transition: "background 0.2s",
+                flexShrink: 0,
+                display: "inline-block",
+                cursor: "pointer",
+              }}
+            >
+              <span style={{
+                position: "absolute",
+                top: 2,
+                left: filterPprof ? 18 : 2,
+                width: 16,
+                height: 16,
+                borderRadius: 8,
+                background: "white",
+                transition: "left 0.2s",
+              }} />
+            </span>
+            Hide profiler noise
+          </label>
+        </div>
+      )}
 
       {/* Trace type: show TraceViewer */}
       {profile.type === "trace" && (
@@ -191,13 +235,26 @@ export default function ProfileViewer() {
   );
 }
 
+function HeapStat({ label, value, objects, accent }: { label: string; value: number; objects: number; accent: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <span className="mono" style={{ fontSize: 18, fontWeight: 700, color: accent }}>{formatTraceSize(value)}</span>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{objects.toLocaleString()} objects</span>
+      </div>
+    </div>
+  );
+}
+
 function formatTraceSize(bytes: number): string {
+  if (bytes >= 1 << 30) return (bytes / (1 << 30)).toFixed(1) + " GB";
   if (bytes >= 1 << 20) return (bytes / (1 << 20)).toFixed(1) + " MB";
   if (bytes >= 1 << 10) return (bytes / (1 << 10)).toFixed(1) + " KB";
   return bytes + " B";
 }
 
-type TopSortKey = "name" | "flat" | "flatPct" | "cum" | "cumPct";
+type TopSortKey = "name" | "flat" | "flatPct" | "cum" | "cumPct" | "allocFlat" | "allocFlatPct" | "allocCum" | "allocCumPct";
 
 function TopFunctionsTable({ functions, onSelect }: {
   functions: TopFunction[];
@@ -205,6 +262,7 @@ function TopFunctionsTable({ functions, onSelect }: {
 }) {
   const [sortKey, setSortKey] = useState<TopSortKey>("cumPct");
   const [sortAsc, setSortAsc] = useState(false);
+  const hasAlloc = functions.some((f) => f.allocFlat != null);
 
   const toggle = (key: TopSortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -221,6 +279,10 @@ function TopFunctionsTable({ functions, onSelect }: {
       case "flatPct": cmp = a.flatPercent - b.flatPercent; break;
       case "cum": cmp = a.cumPercent - b.cumPercent; break;
       case "cumPct": cmp = a.cumPercent - b.cumPercent; break;
+      case "allocFlat": cmp = (a.allocFlatPercent ?? 0) - (b.allocFlatPercent ?? 0); break;
+      case "allocFlatPct": cmp = (a.allocFlatPercent ?? 0) - (b.allocFlatPercent ?? 0); break;
+      case "allocCum": cmp = (a.allocCumPercent ?? 0) - (b.allocCumPercent ?? 0); break;
+      case "allocCumPct": cmp = (a.allocCumPercent ?? 0) - (b.allocCumPercent ?? 0); break;
     }
     return sortAsc ? cmp : -cmp;
   });
@@ -229,29 +291,40 @@ function TopFunctionsTable({ functions, onSelect }: {
     <div className="card" style={{ padding: 0 }}>
       <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
         <span className="card-title">Top Functions</span>
+        {hasAlloc && <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 12 }}>Inuse = current live memory, Alloc = total ever allocated</span>}
       </div>
-      <table className="table">
-        <thead>
-          <tr>
-            <th onClick={() => toggle("name")} style={{ minWidth: 300 }}>Function{ind("name")}</th>
-            <th onClick={() => toggle("flat")} style={{ textAlign: "right", width: 90 }}>Flat{ind("flat")}</th>
-            <th onClick={() => toggle("flatPct")} style={{ textAlign: "right", width: 70 }}>Flat %{ind("flatPct")}</th>
-            <th onClick={() => toggle("cum")} style={{ textAlign: "right", width: 90 }}>Cum{ind("cum")}</th>
-            <th onClick={() => toggle("cumPct")} style={{ textAlign: "right", width: 70 }}>Cum %{ind("cumPct")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.slice(0, 50).map((fn, i) => (
-            <tr key={i} style={{ cursor: "pointer" }} onClick={() => onSelect(fn.name)}>
-              <td className="mono">{fn.name}</td>
-              <td className="mono" style={{ textAlign: "right" }}>{fn.flat}</td>
-              <td className="mono" style={{ textAlign: "right" }}>{fn.flatPercent.toFixed(1)}%</td>
-              <td className="mono" style={{ textAlign: "right" }}>{fn.cum}</td>
-              <td className="mono" style={{ textAlign: "right" }}>{fn.cumPercent.toFixed(1)}%</td>
+      <div style={{ overflow: "auto" }}>
+        <table className="table" style={{ minWidth: hasAlloc ? 900 : undefined }}>
+          <thead>
+            <tr>
+              <th onClick={() => toggle("name")} style={{ minWidth: 250 }}>Function{ind("name")}</th>
+              <th onClick={() => toggle("flat")} style={{ textAlign: "right", width: 80 }}>{hasAlloc ? "Inuse" : "Flat"}{ind("flat")}</th>
+              <th onClick={() => toggle("flatPct")} style={{ textAlign: "right", width: 60 }}>{hasAlloc ? "Inuse %" : "Flat %"}{ind("flatPct")}</th>
+              <th onClick={() => toggle("cum")} style={{ textAlign: "right", width: 80 }}>{hasAlloc ? "Inuse Cum" : "Cum"}{ind("cum")}</th>
+              <th onClick={() => toggle("cumPct")} style={{ textAlign: "right", width: 60 }}>{hasAlloc ? "Cum %" : "Cum %"}{ind("cumPct")}</th>
+              {hasAlloc && <th onClick={() => toggle("allocFlat")} style={{ textAlign: "right", width: 80 }}>Alloc{ind("allocFlat")}</th>}
+              {hasAlloc && <th onClick={() => toggle("allocFlatPct")} style={{ textAlign: "right", width: 60 }}>Alloc %{ind("allocFlatPct")}</th>}
+              {hasAlloc && <th onClick={() => toggle("allocCum")} style={{ textAlign: "right", width: 80 }}>Alloc Cum{ind("allocCum")}</th>}
+              {hasAlloc && <th onClick={() => toggle("allocCumPct")} style={{ textAlign: "right", width: 60 }}>Cum %{ind("allocCumPct")}</th>}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {sorted.slice(0, 50).map((fn, i) => (
+              <tr key={i} style={{ cursor: "pointer" }} onClick={() => onSelect(fn.name)}>
+                <td className="mono">{fn.name}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{fn.flat}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{fn.flatPercent.toFixed(1)}%</td>
+                <td className="mono" style={{ textAlign: "right" }}>{fn.cum}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{fn.cumPercent.toFixed(1)}%</td>
+                {hasAlloc && <td className="mono" style={{ textAlign: "right", color: "var(--text-muted)" }}>{fn.allocFlat}</td>}
+                {hasAlloc && <td className="mono" style={{ textAlign: "right", color: "var(--text-muted)" }}>{fn.allocFlatPercent?.toFixed(1)}%</td>}
+                {hasAlloc && <td className="mono" style={{ textAlign: "right", color: "var(--text-muted)" }}>{fn.allocCum}</td>}
+                {hasAlloc && <td className="mono" style={{ textAlign: "right", color: "var(--text-muted)" }}>{fn.allocCumPercent?.toFixed(1)}%</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -269,6 +342,7 @@ function CallTree({ root, onSelectFunction }: {
   root: CallTreeNode;
   onSelectFunction: (name: string) => void;
 }) {
+  const hasAlloc = root.children?.some((c) => c.allocCumFmt != null) ?? false;
   const [sortKey, setSortKey] = useState<SortKey>("cum");
   const [sortAsc, setSortAsc] = useState(false);
   const [treeSearch, setTreeSearch] = useState("");
@@ -513,11 +587,13 @@ function CallTree({ root, onSelectFunction }: {
         <table className="table" style={{ minWidth: 800 }}>
           <thead style={{ position: "sticky", top: 0, background: "var(--bg-surface)", zIndex: 1 }}>
             <tr>
-              <th onClick={() => toggleSort("name")} style={{ minWidth: 300 }}>Function{sortIndicator("name")}</th>
+              <th onClick={() => toggleSort("name")} style={{ minWidth: 250 }}>Function{sortIndicator("name")}</th>
               <th style={{ width: 120 }}>Distribution</th>
-              <th onClick={() => toggleSort("self")} style={{ textAlign: "right", width: 90 }}>Self{sortIndicator("self")}</th>
-              <th onClick={() => toggleSort("cum")} style={{ textAlign: "right", width: 90 }}>Cum{sortIndicator("cum")}</th>
-              <th onClick={() => toggleSort("calls")} style={{ textAlign: "right", width: 80 }} title="Number of profiler samples (not exact invocation count)">Samples{sortIndicator("calls")}</th>
+              <th onClick={() => toggleSort("self")} style={{ textAlign: "right", width: 80 }}>{hasAlloc ? "Inuse" : "Self"}{sortIndicator("self")}</th>
+              <th onClick={() => toggleSort("cum")} style={{ textAlign: "right", width: 80 }}>{hasAlloc ? "Inuse Cum" : "Cum"}{sortIndicator("cum")}</th>
+              {hasAlloc && <th style={{ textAlign: "right", width: 80 }}>Alloc</th>}
+              {hasAlloc && <th style={{ textAlign: "right", width: 80 }}>Alloc Cum</th>}
+              <th onClick={() => toggleSort("calls")} style={{ textAlign: "right", width: 70 }} title="Number of profiler samples (not exact invocation count)">Samples{sortIndicator("calls")}</th>
             </tr>
           </thead>
           <tbody>
@@ -578,6 +654,8 @@ function CallTree({ root, onSelectFunction }: {
                   </td>
                   <td className="mono" style={{ textAlign: "right" }}>{selfVal}</td>
                   <td className="mono" style={{ textAlign: "right" }}>{cumVal}</td>
+                  {hasAlloc && <td className="mono" style={{ textAlign: "right", color: "var(--text-muted)" }}>{node.allocSelfFmt || "\u2014"}</td>}
+                  {hasAlloc && <td className="mono" style={{ textAlign: "right", color: "var(--text-muted)" }}>{node.allocCumFmt || "\u2014"}</td>}
                   <td className="mono" style={{ textAlign: "right" }}>{node.calls}</td>
                 </tr>
               );

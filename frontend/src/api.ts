@@ -18,6 +18,7 @@ export interface ProfileMeta {
   durationSec?: number;
   size: number;
   label?: string;
+  tags?: string;
 }
 
 export interface FlameNode {
@@ -32,6 +33,10 @@ export interface TopFunction {
   flatPercent: number;
   cum: string;
   cumPercent: number;
+  allocFlat?: string;
+  allocFlatPercent?: number;
+  allocCum?: string;
+  allocCumPercent?: number;
 }
 
 export interface CallTreeNode {
@@ -44,6 +49,10 @@ export interface CallTreeNode {
   cumPct: number;
   /** Number of samples where this function appeared at this call position (not exact invocation count) */
   calls: number;
+  allocSelf?: number;
+  allocSelfFmt?: string;
+  allocCum?: number;
+  allocCumFmt?: string;
   children?: CallTreeNode[];
 }
 
@@ -86,15 +95,20 @@ export const api = {
     request<ProfileMeta>(`/targets/${targetId}/profiles`, { method: "POST", body: JSON.stringify(req) }),
   cancelProfile: (targetId: string) =>
     request<void>(`/targets/${targetId}/profiles/active`, { method: "DELETE" }),
+  getRecordingStatus: (targetId: string) =>
+    request<{ status: string; profileId?: string; error?: string; type?: string }>(`/targets/${targetId}/profiles/active`),
+  stopRecording: (targetId: string) =>
+    request<{ status: string; profileId?: string; error?: string }>(`/targets/${targetId}/profiles/stop`, { method: "POST" }),
 
-  listProfiles: (opts?: { type?: string; target?: string }) => {
+  listProfiles: (opts?: { type?: string; target?: string; tag?: string }) => {
     const params = new URLSearchParams();
     if (opts?.type) params.set("type", opts.type);
     if (opts?.target) params.set("target", opts.target);
+    if (opts?.tag) params.set("tag", opts.tag);
     const qs = params.toString();
     return request<ProfileMeta[]>(`/profiles${qs ? `?${qs}` : ""}`);
   },
-  getProfile: (id: string) => request<ProfileDetail>(`/profiles/${id}`),
+  getProfile: (id: string, filter?: string) => request<ProfileDetail>(`/profiles/${id}${filter ? `?filter=${filter}` : ""}`),
   deleteProfile: (id: string) => request<void>(`/profiles/${id}`, { method: "DELETE" }),
   updateLabel: (id: string, label: string) =>
     request<void>(`/profiles/${id}/label`, { method: "PUT", body: JSON.stringify({ label }) }),
@@ -104,6 +118,10 @@ export const api = {
 
   diffProfiles: (baseId: string, compareId: string) =>
     request<ProfileDetail>(`/profiles/diff?base=${baseId}&compare=${compareId}`),
+
+  setTags: (id: string, tags: string[]) =>
+    request<void>(`/profiles/${id}/tags`, { method: "PUT", body: JSON.stringify({ tags }) }),
+  listTags: () => request<string[]>("/tags"),
 
   getProcessInfo: (targetId: string) => request<ProcessInfo>(`/targets/${targetId}/process-info`),
   getAvailableProfiles: (targetId: string) => request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),

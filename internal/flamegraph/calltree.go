@@ -5,15 +5,19 @@ import (
 )
 
 type CallTreeNode struct {
-	Name     string          `json:"name"`
-	Self     int64           `json:"self"`
-	SelfFmt  string          `json:"selfFmt"`
-	SelfPct  float64         `json:"selfPct"`
-	Cum      int64           `json:"cum"`
-	CumFmt   string          `json:"cumFmt"`
-	CumPct   float64         `json:"cumPct"`
-	Calls    int64           `json:"calls"` // number of profiler samples, not exact invocations
-	Children []*CallTreeNode `json:"children,omitempty"`
+	Name         string          `json:"name"`
+	Self         int64           `json:"self"`
+	SelfFmt      string          `json:"selfFmt"`
+	SelfPct      float64         `json:"selfPct"`
+	Cum          int64           `json:"cum"`
+	CumFmt       string          `json:"cumFmt"`
+	CumPct       float64         `json:"cumPct"`
+	Calls        int64           `json:"calls"` // number of profiler samples, not exact invocations
+	AllocSelf    int64           `json:"allocSelf,omitempty"`
+	AllocSelfFmt string          `json:"allocSelfFmt,omitempty"`
+	AllocCum     int64           `json:"allocCum,omitempty"`
+	AllocCumFmt  string          `json:"allocCumFmt,omitempty"`
+	Children     []*CallTreeNode `json:"children,omitempty"`
 }
 
 func BuildCallTree(p *profile.Profile) *CallTreeNode {
@@ -22,6 +26,16 @@ func BuildCallTree(p *profile.Profile) *CallTreeNode {
 	}
 
 	valueIdx := bestValueIndex(p)
+
+	allocIdx := -1
+	if len(p.SampleType) >= 4 {
+		for i, st := range p.SampleType {
+			if st.Type == "alloc_space" && st.Unit == "bytes" {
+				allocIdx = i
+				break
+			}
+		}
+	}
 
 	var total int64
 	for _, s := range p.Sample {
@@ -32,12 +46,12 @@ func BuildCallTree(p *profile.Profile) *CallTreeNode {
 
 	for _, sample := range p.Sample {
 		value := sample.Value[valueIdx]
-		if value == 0 {
-			continue
+		allocValue := int64(0)
+		if allocIdx >= 0 && allocIdx < len(sample.Value) {
+			allocValue = sample.Value[allocIdx]
 		}
 
 		node := root
-		// Walk locations in reverse (root to leaf)
 		for i := len(sample.Location) - 1; i >= 0; i-- {
 			loc := sample.Location[i]
 			for j := len(loc.Line) - 1; j >= 0; j-- {
@@ -59,25 +73,34 @@ func BuildCallTree(p *profile.Profile) *CallTreeNode {
 					node.Children = append(node.Children, child)
 				}
 				child.Cum += value
+				child.AllocCum += allocValue
 				child.Calls++
 				node = child
 			}
 		}
 		root.Cum += value
+		root.AllocCum += allocValue
 		root.Calls++
 	}
 
+	var allocSt *profile.ValueType
+	if allocIdx >= 0 {
+		allocSt = p.SampleType[allocIdx]
+	}
+
 	// Compute self values (cum - sum of children cum) and format strings
-	computeSelf(root, total, p.SampleType[valueIdx])
+	computeSelf(root, total, p.SampleType[valueIdx], allocSt)
 
 	return root
 }
 
-func computeSelf(node *CallTreeNode, total int64, st *profile.ValueType) {
+func computeSelf(node *CallTreeNode, total int64, st *profile.ValueType, allocSt *profile.ValueType) {
 	var childrenCum int64
+	var childrenAllocCum int64
 	for _, c := range node.Children {
 		childrenCum += c.Cum
-		computeSelf(c, total, st)
+		childrenAllocCum += c.AllocCum
+		computeSelf(c, total, st, allocSt)
 	}
 
 	node.Self = node.Cum - childrenCum
@@ -89,4 +112,13 @@ func computeSelf(node *CallTreeNode, total int64, st *profile.ValueType) {
 	node.SelfPct = pct(node.Self, total)
 	node.CumFmt = formatValue(node.Cum, st)
 	node.CumPct = pct(node.Cum, total)
+
+	if allocSt != nil {
+		node.AllocSelf = node.AllocCum - childrenAllocCum
+		if node.AllocSelf < 0 {
+			node.AllocSelf = 0
+		}
+		node.AllocSelfFmt = formatValue(node.AllocSelf, allocSt)
+		node.AllocCumFmt = formatValue(node.AllocCum, allocSt)
+	}
 }

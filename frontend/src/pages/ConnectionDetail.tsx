@@ -2,6 +2,16 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { api } from "../api";
 import type { Target, ProfileMeta, StartProfileRequest, ProcessInfo, AvailableProfile } from "../api";
+
+function parseTags(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 import ProfileTypeBadge from "../components/ProfileTypeBadge";
 import { refreshSidebar, onConnectionChange } from "../App";
 import MemoryChart from "../components/MemoryChart";
@@ -17,6 +27,11 @@ export default function ConnectionDetail() {
   const [target, setTarget] = useState<Target | null>(null);
   const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
   const [typeFilter, setTypeFilter] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [addTagProfileId, setAddTagProfileId] = useState<string | null>(null);
+  const [addTagInput, setAddTagInput] = useState("");
+  const [compareBaseProfile, setCompareBaseProfile] = useState<ProfileMeta | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [processInfo, setProcessInfo] = useState<ProcessInfo | null>(null);
 
@@ -38,10 +53,14 @@ export default function ConnectionDetail() {
   };
 
   const loadProfiles = (url: string) => {
-    api.listProfiles({ target: url, type: typeFilter || undefined }).then(setProfiles).catch(() => {});
+    api.listProfiles({ target: url, type: typeFilter || undefined, tag: tagFilter || undefined }).then(setProfiles).catch(() => {});
   };
 
-  useEffect(() => { loadTarget(); }, [id]);
+  const loadTags = () => {
+    api.listTags().then(setAvailableTags).catch(() => {});
+  };
+
+  useEffect(() => { loadTarget(); loadTags(); }, [id]);
   useEffect(() => {
     if (id) api.getProcessInfo(id).then(setProcessInfo).catch(() => {});
   }, [id]);
@@ -52,7 +71,7 @@ export default function ConnectionDetail() {
       if (id) api.getProcessInfo(id).then(setProcessInfo).catch(() => {});
     });
   }, [id]);
-  useEffect(() => { if (target) loadProfiles(target.url); }, [typeFilter]);
+  useEffect(() => { if (target) loadProfiles(target.url); }, [typeFilter, tagFilter]);
 
   const disconnect = async () => {
     if (!id) return;
@@ -143,57 +162,175 @@ export default function ConnectionDetail() {
           {target.status === "connected" && (
             <ProfilingControls
               targetId={target.id}
-              onComplete={() => { if (target) loadProfiles(target.url); }}
+              onComplete={(profileId) => {
+                if (target) loadProfiles(target.url);
+                if (profileId) navigate(`/profiles/${profileId}`);
+              }}
             />
           )}
 
           <div style={{ marginTop: 24 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12, gap: 12, flexWrap: "wrap" }}>
               <h2 style={{ fontSize: 16, fontWeight: 600 }}>Profiles</h2>
-              <div style={{ display: "flex", gap: 6 }}>
-                {["", "cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate"].map((t) => (
-                  <button
-                    key={t}
-                    className={`btn btn-sm ${typeFilter === t ? "btn-primary" : "btn-secondary"}`}
-                    onClick={() => setTypeFilter(t)}
-                  >
-                    {t || "All"}
-                  </button>
-                ))}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {["", "cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate"].map((t) => (
+                    <button
+                      key={t}
+                      className={`btn btn-sm ${typeFilter === t ? "btn-primary" : "btn-secondary"}`}
+                      onClick={() => setTypeFilter(t)}
+                    >
+                      {t || "All"}
+                    </button>
+                  ))}
+                </div>
+                {availableTags.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Tag:</span>
+                    <button
+                      className={`btn btn-sm ${tagFilter === "" ? "btn-primary" : "btn-secondary"}`}
+                      onClick={() => setTagFilter("")}
+                    >
+                      All
+                    </button>
+                    {availableTags.map((tag) => (
+                      <button
+                        key={tag}
+                        className={`btn btn-sm ${tagFilter === tag ? "btn-primary" : "btn-secondary"}`}
+                        onClick={() => setTagFilter(tagFilter === tag ? "" : tag)}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
             {profiles.length > 0 ? (
-              <div className="card" style={{ padding: 0 }}>
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Type</th>
-                      <th>Timestamp</th>
-                      <th>Duration</th>
-                      <th>Size</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {profiles.map((p) => (
-                      <tr key={p.id}>
-                        <td><ProfileTypeBadge type={p.type} /></td>
-                        <td>{new Date(p.timestamp).toLocaleString()}</td>
-                        <td>{p.durationSec ? `${p.durationSec}s` : "instant"}</td>
-                        <td>{formatBytes(p.size)}</td>
-                        <td>
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <Link to={`/profiles/${p.id}`} className="btn btn-primary btn-sm">View</Link>
-                            <button className="btn btn-secondary btn-sm" onClick={() => api.exportProfile(p.id)}>Export</button>
-                            <button className="btn btn-danger btn-sm" onClick={() => deleteProfile(p.id)}>Delete</button>
-                          </div>
-                        </td>
+              <>
+                <div className="card" style={{ padding: 0 }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Timestamp</th>
+                        <th>Duration</th>
+                        <th>Size</th>
+                        <th>Tags</th>
+                        <th>Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {profiles.map((p) => {
+                        const tags = parseTags(p.tags);
+                        const isAddingTag = addTagProfileId === p.id;
+                        const isCompareBase = compareBaseProfile?.id === p.id;
+                        return (
+                          <tr key={p.id} style={{ background: isCompareBase ? "rgba(99,102,241,0.08)" : undefined }}>
+                            <td><ProfileTypeBadge type={p.type} /></td>
+                            <td>{new Date(p.timestamp).toLocaleString()}</td>
+                            <td>{p.durationSec ? `${p.durationSec}s` : "instant"}</td>
+                            <td>{formatBytes(p.size)}</td>
+                            <td>
+                              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                                {tags.map((tag) => (
+                                  <span
+                                    key={tag}
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      padding: "2px 6px",
+                                      borderRadius: 4,
+                                      background: "rgba(99,102,241,0.18)",
+                                      color: "var(--accent)",
+                                      border: "1px solid rgba(99,102,241,0.3)",
+                                      letterSpacing: "0.03em",
+                                    }}
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                                {isAddingTag ? (
+                                  <form
+                                    style={{ display: "flex", gap: 4 }}
+                                    onSubmit={async (e) => {
+                                      e.preventDefault();
+                                      const newTag = addTagInput.trim();
+                                      if (!newTag) return;
+                                      const next = [...tags, newTag];
+                                      await api.setTags(p.id, next).catch(() => {});
+                                      setAddTagProfileId(null);
+                                      setAddTagInput("");
+                                      if (target) loadProfiles(target.url);
+                                      loadTags();
+                                    }}
+                                  >
+                                    <input
+                                      autoFocus
+                                      className="input"
+                                      style={{ width: 90, padding: "2px 6px", fontSize: 11, height: 22 }}
+                                      placeholder="tag name"
+                                      value={addTagInput}
+                                      onChange={(e) => setAddTagInput(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Escape") {
+                                          setAddTagProfileId(null);
+                                          setAddTagInput("");
+                                        }
+                                      }}
+                                    />
+                                    <button type="submit" className="btn btn-primary btn-sm" style={{ padding: "2px 6px", fontSize: 11, height: 22 }}>Add</button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      style={{ padding: "2px 6px", fontSize: 11, height: 22 }}
+                                      onClick={() => { setAddTagProfileId(null); setAddTagInput(""); }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </form>
+                                ) : (
+                                  <button
+                                    title="Add tag"
+                                    className="btn btn-secondary btn-sm"
+                                    style={{ padding: "1px 6px", fontSize: 13, lineHeight: 1, height: 20 }}
+                                    onClick={() => { setAddTagProfileId(p.id); setAddTagInput(""); }}
+                                  >
+                                    +
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <Link to={`/profiles/${p.id}`} className="btn btn-primary btn-sm">View</Link>
+                                <button
+                                  className={`btn btn-sm ${isCompareBase ? "btn-primary" : "btn-secondary"}`}
+                                  onClick={() => setCompareBaseProfile(isCompareBase ? null : p)}
+                                >
+                                  {isCompareBase ? "Comparing..." : "Compare"}
+                                </button>
+                                <button className="btn btn-secondary btn-sm" onClick={() => api.exportProfile(p.id)}>Export</button>
+                                <button className="btn btn-danger btn-sm" onClick={() => deleteProfile(p.id)}>Delete</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {compareBaseProfile && (
+                  <CompareSelector
+                    base={compareBaseProfile}
+                    targetURL={target.url}
+                    onClose={() => setCompareBaseProfile(null)}
+                    onNavigate={(baseId, compareId) => navigate(`/profiles/diff?base=${baseId}&compare=${compareId}`)}
+                  />
+                )}
+              </>
             ) : (
               <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--text-secondary)" }}>
                 No profiles collected yet.{target.status === "connected" ? " Use the controls above to start profiling." : " Reconnect to collect new profiles."}
@@ -267,13 +404,14 @@ export default function ConnectionDetail() {
 
 const WELL_KNOWN = new Set(["cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate"]);
 
-function ProfilingControls({ targetId, onComplete }: { targetId: string; onComplete: () => void }) {
+function ProfilingControls({ targetId, onComplete }: { targetId: string; onComplete: (profileId?: string) => void }) {
   const [profileType, setProfileType] = useState<ProfileType>("cpu");
   const [duration, setDuration] = useState(30);
   const [profiling, setProfiling] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [available, setAvailable] = useState<AvailableProfile[] | null>(null);
 
   useEffect(() => {
@@ -286,45 +424,74 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
 
   const isRecording = profileType === "cpu" || profileType === "trace";
 
+  const cleanup = () => {
+    setProfiling(false);
+    setProgress(0);
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
   const startProfile = async () => {
     setProfiling(true);
     setError("");
     setProgress(0);
 
     if (isRecording) {
+      // Start async recording
       const startTime = Date.now();
       const totalMs = duration * 1000;
       timerRef.current = setInterval(() => {
         const elapsed = Date.now() - startTime;
         setProgress(Math.min(elapsed / totalMs, 0.99));
       }, 200);
-    }
 
-    try {
-      const req: StartProfileRequest = { type: profileType };
-      if (isRecording) req.durationSec = duration;
-      await api.startProfile(targetId, req);
-      setProgress(1);
-      onComplete();
-    } catch (e: any) {
-      setError(e.message || "Profiling failed");
-    } finally {
-      setProfiling(false);
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+      try {
+        const req: StartProfileRequest = { type: profileType, durationSec: duration };
+        await api.startProfile(targetId, req);
+
+        // Poll for completion
+        pollRef.current = setInterval(async () => {
+          try {
+            const status = await api.getRecordingStatus(targetId);
+            if (status.status === "done") {
+              cleanup();
+              onComplete(status.profileId);
+            } else if (status.status === "failed") {
+              cleanup();
+              setError(status.error || "Recording failed");
+            } else if (status.status === "idle") {
+              // Recording finished between polls
+              cleanup();
+            }
+          } catch {}
+        }, 1000);
+      } catch (e: any) {
+        cleanup();
+        setError(e.message || "Failed to start recording");
+      }
+    } else {
+      // Synchronous snapshot
+      try {
+        const req: StartProfileRequest = { type: profileType };
+        const result = await api.startProfile(targetId, req);
+        cleanup();
+        // For all_snapshots, result is an array -- just refresh list
+        if (profileType === "all_snapshots") {
+          onComplete();
+        } else {
+          onComplete((result as any)?.id);
+        }
+      } catch (e: any) {
+        cleanup();
+        setError(e.message || "Capture failed");
       }
     }
   };
 
+
   const cancelProfile = async () => {
     try { await api.cancelProfile(targetId); } catch {}
-    setProfiling(false);
-    setProgress(0);
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
+    cleanup();
   };
 
   return (
@@ -420,7 +587,7 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
       {profiling && isRecording && (
         <div style={{ marginTop: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
-            <span>Recording CPU profile...</span>
+            <span>Recording {profileType === "trace" ? "execution trace" : "CPU profile"}...</span>
             <span>{Math.round(progress * 100)}%</span>
           </div>
           <div className="progress-bar">
@@ -454,4 +621,163 @@ function formatBytes(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function CompareSelector({
+  base,
+  targetURL,
+  onClose,
+  onNavigate,
+}: {
+  base: ProfileMeta;
+  targetURL: string;
+  onClose: () => void;
+  onNavigate: (baseId: string, compareId: string) => void;
+}) {
+  const [candidateTagFilter, setCandidateTagFilter] = useState("");
+  const [candidateTags, setCandidateTags] = useState<string[]>([]);
+  const [candidates, setCandidates] = useState<ProfileMeta[]>([]);
+
+  useEffect(() => {
+    api.listTags().then(setCandidateTags).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api
+      .listProfiles({ target: targetURL, type: base.type, tag: candidateTagFilter || undefined })
+      .then((all) => setCandidates(all.filter((p) => p.id !== base.id)))
+      .catch(() => {});
+  }, [targetURL, base.type, base.id, candidateTagFilter]);
+
+  return (
+    <div
+      className="card"
+      style={{
+        marginTop: 12,
+        border: "1px solid rgba(99,102,241,0.4)",
+        background: "var(--bg-surface)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontWeight: 600, fontSize: 14 }}>
+          Compare: select a profile to compare against
+        </span>
+        <button className="btn btn-secondary btn-sm" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+
+      <div
+        style={{
+          padding: "8px 12px",
+          marginBottom: 12,
+          borderRadius: 6,
+          background: "rgba(99,102,241,0.1)",
+          border: "1px solid rgba(99,102,241,0.25)",
+          fontSize: 13,
+          display: "flex",
+          gap: 10,
+          alignItems: "center",
+        }}
+      >
+        <span style={{ color: "var(--text-muted)", fontWeight: 600 }}>Base:</span>
+        <ProfileTypeBadge type={base.type} />
+        <span className="mono" style={{ fontSize: 12 }}>{new Date(base.timestamp).toLocaleString()}</span>
+        {parseTags(base.tags).map((tag) => (
+          <span
+            key={tag}
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              padding: "2px 6px",
+              borderRadius: 4,
+              background: "rgba(99,102,241,0.18)",
+              color: "var(--accent)",
+              border: "1px solid rgba(99,102,241,0.3)",
+            }}
+          >
+            {tag}
+          </span>
+        ))}
+      </div>
+
+      {candidateTags.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Filter by tag:</span>
+          <button
+            className={`btn btn-sm ${candidateTagFilter === "" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setCandidateTagFilter("")}
+          >
+            All
+          </button>
+          {candidateTags.map((tag) => (
+            <button
+              key={tag}
+              className={`btn btn-sm ${candidateTagFilter === tag ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => setCandidateTagFilter(candidateTagFilter === tag ? "" : tag)}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {candidates.length === 0 ? (
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+          No other {base.type} profiles available{candidateTagFilter ? ` with tag "${candidateTagFilter}"` : ""}.
+        </p>
+      ) : (
+        <div style={{ maxHeight: 260, overflow: "auto" }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Duration</th>
+                <th>Size</th>
+                <th>Tags</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((c) => (
+                <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => onNavigate(base.id, c.id)}>
+                  <td className="mono" style={{ fontSize: 12 }}>{new Date(c.timestamp).toLocaleString()}</td>
+                  <td>{c.durationSec ? `${c.durationSec}s` : "instant"}</td>
+                  <td>{formatBytes(c.size)}</td>
+                  <td>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {parseTags(c.tags).map((tag) => (
+                        <span
+                          key={tag}
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            background: "rgba(99,102,241,0.18)",
+                            color: "var(--accent)",
+                            border: "1px solid rgba(99,102,241,0.3)",
+                          }}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={(e) => { e.stopPropagation(); onNavigate(base.id, c.id); }}
+                    >
+                      Diff
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }

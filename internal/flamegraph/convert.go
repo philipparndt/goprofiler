@@ -14,11 +14,15 @@ type Node struct {
 }
 
 type TopFunction struct {
-	Name    string  `json:"name"`
-	Flat    string  `json:"flat"`
-	FlatPct float64 `json:"flatPercent"`
-	Cum     string  `json:"cum"`
-	CumPct  float64 `json:"cumPercent"`
+	Name       string  `json:"name"`
+	Flat       string  `json:"flat"`
+	FlatPct    float64 `json:"flatPercent"`
+	Cum        string  `json:"cum"`
+	CumPct     float64 `json:"cumPercent"`
+	AllocFlat  string  `json:"allocFlat,omitempty"`
+	AllocFPct  float64 `json:"allocFlatPercent,omitempty"`
+	AllocCum   string  `json:"allocCum,omitempty"`
+	AllocCPct  float64 `json:"allocCumPercent,omitempty"`
 }
 
 type Result struct {
@@ -74,19 +78,31 @@ func Convert(p *profile.Profile) *Result {
 		root.Value += value
 	}
 
+	// Find alloc_space index for heap profiles (to show both inuse and alloc)
+	allocIdx := -1
+	if len(p.SampleType) >= 4 {
+		for i, st := range p.SampleType {
+			if st.Type == "alloc_space" && st.Unit == "bytes" {
+				allocIdx = i
+				break
+			}
+		}
+	}
+
 	// Build top functions table
 	type funcStats struct {
-		name string
-		flat int64
-		cum  int64
+		flat      int64
+		cum       int64
+		allocFlat int64
+		allocCum  int64
 	}
-	flatMap := make(map[string]*funcStats)
-	cumMap := make(map[string]int64)
+	statsMap := make(map[string]*funcStats)
 
 	for _, sample := range p.Sample {
 		value := sample.Value[valueIdx]
-		if value == 0 {
-			continue
+		allocValue := int64(0)
+		if allocIdx >= 0 && allocIdx < len(sample.Value) {
+			allocValue = sample.Value[allocIdx]
 		}
 
 		seen := make(map[string]bool)
@@ -100,40 +116,51 @@ func Convert(p *profile.Profile) *Result {
 					continue
 				}
 
+				fs, ok := statsMap[name]
+				if !ok {
+					fs = &funcStats{}
+					statsMap[name] = fs
+				}
+
 				if !seen[name] {
-					cumMap[name] += value
+					fs.cum += value
+					fs.allocCum += allocValue
 					seen[name] = true
 				}
 
-				// Flat = leaf only (first location, first line)
 				if i == 0 {
-					if _, ok := flatMap[name]; !ok {
-						flatMap[name] = &funcStats{name: name}
-					}
-					flatMap[name].flat += value
+					fs.flat += value
+					fs.allocFlat += allocValue
 				}
 			}
 		}
 	}
 
 	var total int64
+	var allocTotal int64
 	for _, s := range p.Sample {
 		total += s.Value[valueIdx]
+		if allocIdx >= 0 && allocIdx < len(s.Value) {
+			allocTotal += s.Value[allocIdx]
+		}
 	}
 
 	var topFuncs []TopFunction
-	for name, cum := range cumMap {
-		flat := int64(0)
-		if fs, ok := flatMap[name]; ok {
-			flat = fs.flat
-		}
-		topFuncs = append(topFuncs, TopFunction{
+	for name, fs := range statsMap {
+		tf := TopFunction{
 			Name:    name,
-			Flat:    formatValue(flat, p.SampleType[valueIdx]),
-			FlatPct: pct(flat, total),
-			Cum:     formatValue(cum, p.SampleType[valueIdx]),
-			CumPct:  pct(cum, total),
-		})
+			Flat:    formatValue(fs.flat, p.SampleType[valueIdx]),
+			FlatPct: pct(fs.flat, total),
+			Cum:     formatValue(fs.cum, p.SampleType[valueIdx]),
+			CumPct:  pct(fs.cum, total),
+		}
+		if allocIdx >= 0 {
+			tf.AllocFlat = formatValue(fs.allocFlat, p.SampleType[allocIdx])
+			tf.AllocFPct = pct(fs.allocFlat, allocTotal)
+			tf.AllocCum = formatValue(fs.allocCum, p.SampleType[allocIdx])
+			tf.AllocCPct = pct(fs.allocCum, allocTotal)
+		}
+		topFuncs = append(topFuncs, tf)
 	}
 
 	sort.Slice(topFuncs, func(i, j int) bool {
@@ -148,12 +175,23 @@ func Convert(p *profile.Profile) *Result {
 
 // bestValueIndex picks the most meaningful value type from a pprof profile.
 // CPU profiles have [samples, cpu_nanoseconds] -- prefer cpu (index 1).
-// Heap profiles have [alloc_objects, alloc_space, ...] -- prefer bytes (alloc_space, index 1).
+// Heap profiles have [alloc_objects, alloc_space, inuse_objects, inuse_space] -- prefer inuse_space (index 3).
+// Allocs profiles: same layout but prefer alloc_space (index 1).
 // Falls back to 0 if only one value type exists.
 func bestValueIndex(p *profile.Profile) int {
 	if len(p.SampleType) <= 1 {
 		return 0
 	}
+
+	// For heap-like profiles (4 value types): prefer inuse_space (current live memory)
+	if len(p.SampleType) >= 4 {
+		for i, st := range p.SampleType {
+			if st.Type == "inuse_space" && st.Unit == "bytes" {
+				return i
+			}
+		}
+	}
+
 	// Prefer time or bytes over counts
 	for i, st := range p.SampleType {
 		switch st.Unit {

@@ -2,9 +2,11 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
@@ -19,6 +21,7 @@ type ProfileRecord struct {
 	DurationSec int       `json:"durationSec,omitempty"`
 	Size        int64     `json:"size"`
 	Label       string    `json:"label,omitempty"`
+	Tags        string    `json:"tags"`
 	FilePath    string    `json:"-"`
 }
 
@@ -67,11 +70,17 @@ func (s *Store) migrate() error {
 			duration_sec INTEGER DEFAULT 0,
 			size INTEGER DEFAULT 0,
 			label TEXT DEFAULT '',
-			file_path TEXT NOT NULL
+			file_path TEXT NOT NULL,
+			tags TEXT DEFAULT '[]'
 		);
 		CREATE INDEX IF NOT EXISTS idx_profiles_type ON profiles(type);
 		CREATE INDEX IF NOT EXISTS idx_profiles_timestamp ON profiles(timestamp DESC);
 	`)
+	if err != nil {
+		return err
+	}
+	// Migration: add tags column if missing (existing databases)
+	s.db.Exec(`ALTER TABLE profiles ADD COLUMN tags TEXT DEFAULT '[]'`)
 	return err
 }
 
@@ -88,10 +97,13 @@ func (s *Store) SaveProfile(rec *ProfileRecord, data []byte) error {
 	rec.FilePath = filePath
 	rec.Size = int64(len(data))
 
+	if rec.Tags == "" {
+		rec.Tags = "[]"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO profiles (id, target_url, type, timestamp, duration_sec, size, label, file_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.TargetURL, rec.Type, rec.Timestamp, rec.DurationSec, rec.Size, rec.Label, rec.FilePath,
+		`INSERT INTO profiles (id, target_url, type, timestamp, duration_sec, size, label, file_path, tags)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.ID, rec.TargetURL, rec.Type, rec.Timestamp, rec.DurationSec, rec.Size, rec.Label, rec.FilePath, rec.Tags,
 	)
 	if err != nil {
 		os.Remove(filePath)
@@ -101,8 +113,8 @@ func (s *Store) SaveProfile(rec *ProfileRecord, data []byte) error {
 	return nil
 }
 
-func (s *Store) ListProfiles(profileType, targetURL string) ([]ProfileRecord, error) {
-	query := `SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path FROM profiles`
+func (s *Store) ListProfiles(profileType, targetURL, tag string) ([]ProfileRecord, error) {
+	query := `SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path, tags FROM profiles`
 	args := []any{}
 	conditions := []string{}
 
@@ -113,6 +125,10 @@ func (s *Store) ListProfiles(profileType, targetURL string) ([]ProfileRecord, er
 	if targetURL != "" {
 		conditions = append(conditions, "target_url = ?")
 		args = append(args, targetURL)
+	}
+	if tag != "" {
+		conditions = append(conditions, "tags LIKE ?")
+		args = append(args, "%\""+tag+"\"%")
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + conditions[0]
@@ -131,7 +147,7 @@ func (s *Store) ListProfiles(profileType, targetURL string) ([]ProfileRecord, er
 	var profiles []ProfileRecord
 	for rows.Next() {
 		var p ProfileRecord
-		if err := rows.Scan(&p.ID, &p.TargetURL, &p.Type, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath); err != nil {
+		if err := rows.Scan(&p.ID, &p.TargetURL, &p.Type, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath, &p.Tags); err != nil {
 			return nil, err
 		}
 		profiles = append(profiles, p)
@@ -161,9 +177,9 @@ func (s *Store) ProfileCountsByTarget() (map[string]int, error) {
 func (s *Store) GetProfile(id string) (*ProfileRecord, error) {
 	var p ProfileRecord
 	err := s.db.QueryRow(
-		`SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path FROM profiles WHERE id = ?`,
+		`SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path, tags FROM profiles WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.TargetURL, &p.Type, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath)
+	).Scan(&p.ID, &p.TargetURL, &p.Type, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath, &p.Tags)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("profile not found: %s", id)
 	}
@@ -195,6 +211,49 @@ func (s *Store) UpdateLabel(id, label string) error {
 		return fmt.Errorf("profile not found: %s", id)
 	}
 	return nil
+}
+
+func (s *Store) SetTags(id, tagsJSON string) error {
+	result, err := s.db.Exec("UPDATE profiles SET tags = ? WHERE id = ?", tagsJSON, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("profile not found: %s", id)
+	}
+	return nil
+}
+
+func (s *Store) ListAllTags() ([]string, error) {
+	rows, err := s.db.Query("SELECT DISTINCT tags FROM profiles WHERE tags != '[]'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tagSet := make(map[string]bool)
+	for rows.Next() {
+		var tagsJSON string
+		if err := rows.Scan(&tagsJSON); err != nil {
+			continue
+		}
+		// Parse JSON array
+		var tags []string
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			continue
+		}
+		for _, t := range tags {
+			tagSet[t] = true
+		}
+	}
+
+	var result []string
+	for t := range tagSet {
+		result = append(result, t)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func (s *Store) GetProfileData(id string) ([]byte, error) {
