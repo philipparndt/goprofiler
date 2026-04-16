@@ -22,8 +22,6 @@ export default function ProfileViewer() {
   const chartRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
 
-  const isHeapLike = profile?.type === "heap" || profile?.type === "allocs";
-
   const loadProfile = () => {
     if (!id) return;
     const filter = filterPprof ? "pprof" : undefined;
