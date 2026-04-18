@@ -12,7 +12,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/philipparndt/go-logger"
-	loggerchi "github.com/philipparndt/go-logger-chi"
+	loggerchi "github.com/philipparndt/go-logger/chi"
 
 	"github.com/philipparndt/goprofiler/internal/api"
 	"github.com/philipparndt/goprofiler/internal/connection"
@@ -27,7 +27,7 @@ func main() {
 	logLevel := flag.String("log-level", "info", "log level (trace, debug, info, warn, error)")
 	flag.Parse()
 
-	logger.SetLevel(*logLevel)
+	logger.Init(*logLevel, logger.Logger())
 
 	if *dataDir == "" {
 		home, _ := os.UserHomeDir()
@@ -65,7 +65,7 @@ func main() {
 	handler := api.NewHandler(connStore, store, monitorSvc)
 
 	r := chi.NewRouter()
-	r.Use(loggerchi.Middleware())
+	r.Use(loggerchi.Logger())
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:*"},

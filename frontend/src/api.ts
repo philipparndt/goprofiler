@@ -67,6 +67,20 @@ export interface StartProfileRequest {
   durationSec?: number;
 }
 
+// Runtime detection: Wails injects window.go at startup
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isWails(): boolean {
+  return !!(window as any).go;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wailsCall(method: string, ...args: any[]): Promise<any> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (window as any).go.main.App[method](...args);
+}
+
+// --- HTTP (browser) mode ---
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -82,25 +96,51 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+// --- API object (dispatches to HTTP or Wails) ---
+
 export const api = {
-  listTargets: () => request<Target[]>("/targets"),
-  connect: (url: string) => request<Target>("/targets", { method: "POST", body: JSON.stringify({ url }) }),
-  disconnect: (id: string) => request<void>(`/targets/${id}`, { method: "DELETE" }),
+  listTargets: (): Promise<Target[]> =>
+    isWails() ? wailsCall("ListTargets") : request<Target[]>("/targets"),
 
-  listSavedTargets: () => request<Target[]>("/targets/saved"),
-  reconnect: (id: string) => request<Target>(`/targets/saved/${id}/reconnect`, { method: "POST" }),
-  removeSavedTarget: (id: string) => request<void>(`/targets/saved/${id}`, { method: "DELETE" }),
+  connect: (url: string): Promise<Target> =>
+    isWails() ? wailsCall("AddTarget", url) : request<Target>("/targets", { method: "POST", body: JSON.stringify({ url }) }),
 
-  startProfile: (targetId: string, req: StartProfileRequest) =>
-    request<ProfileMeta>(`/targets/${targetId}/profiles`, { method: "POST", body: JSON.stringify(req) }),
-  cancelProfile: (targetId: string) =>
-    request<void>(`/targets/${targetId}/profiles/active`, { method: "DELETE" }),
-  getRecordingStatus: (targetId: string) =>
-    request<{ status: string; profileId?: string; error?: string; type?: string }>(`/targets/${targetId}/profiles/active`),
-  stopRecording: (targetId: string) =>
-    request<{ status: string; profileId?: string; error?: string }>(`/targets/${targetId}/profiles/stop`, { method: "POST" }),
+  disconnect: (id: string): Promise<void> =>
+    isWails() ? wailsCall("DisconnectTarget", id) : request<void>(`/targets/${id}`, { method: "DELETE" }),
 
-  listProfiles: (opts?: { type?: string; target?: string; tag?: string }) => {
+  listSavedTargets: (): Promise<Target[]> =>
+    isWails() ? wailsCall("ListSavedTargets") : request<Target[]>("/targets/saved"),
+
+  reconnect: (id: string): Promise<Target> =>
+    isWails() ? wailsCall("ReconnectTarget", id) : request<Target>(`/targets/saved/${id}/reconnect`, { method: "POST" }),
+
+  removeSavedTarget: (id: string): Promise<void> =>
+    isWails() ? wailsCall("RemoveTarget", id) : request<void>(`/targets/saved/${id}`, { method: "DELETE" }),
+
+  startProfile: (targetId: string, req: StartProfileRequest): Promise<ProfileMeta> =>
+    isWails()
+      ? wailsCall("StartProfile", targetId, req.type, req.durationSec ?? 30)
+      : request<ProfileMeta>(`/targets/${targetId}/profiles`, { method: "POST", body: JSON.stringify(req) }),
+
+  cancelProfile: (targetId: string): Promise<void> =>
+    isWails()
+      ? wailsCall("CancelProfile", targetId)
+      : request<void>(`/targets/${targetId}/profiles/active`, { method: "DELETE" }),
+
+  getRecordingStatus: (targetId: string): Promise<{ status: string; profileId?: string; error?: string; type?: string }> =>
+    isWails()
+      ? wailsCall("GetRecordingStatus", targetId)
+      : request<{ status: string; profileId?: string; error?: string; type?: string }>(`/targets/${targetId}/profiles/active`),
+
+  stopRecording: (targetId: string): Promise<{ status: string; profileId?: string; error?: string }> =>
+    isWails()
+      ? wailsCall("StopRecording", targetId)
+      : request<{ status: string; profileId?: string; error?: string }>(`/targets/${targetId}/profiles/stop`, { method: "POST" }),
+
+  listProfiles: (opts?: { type?: string; target?: string; tag?: string }): Promise<ProfileMeta[]> => {
+    if (isWails()) {
+      return wailsCall("ListProfiles", opts?.type ?? "", opts?.target ?? "", opts?.tag ?? "");
+    }
     const params = new URLSearchParams();
     if (opts?.type) params.set("type", opts.type);
     if (opts?.target) params.set("target", opts.target);
@@ -108,36 +148,79 @@ export const api = {
     const qs = params.toString();
     return request<ProfileMeta[]>(`/profiles${qs ? `?${qs}` : ""}`);
   },
-  getProfile: (id: string, opts?: { filter?: string; valueMode?: string }) => {
+
+  getProfile: (id: string, opts?: { filter?: string; valueMode?: string }): Promise<ProfileDetail> => {
+    if (isWails()) {
+      return wailsCall("GetProfile", id, opts?.filter ?? "", opts?.valueMode ?? "");
+    }
     const params = new URLSearchParams();
     if (opts?.filter) params.set("filter", opts.filter);
     if (opts?.valueMode) params.set("valueMode", opts.valueMode);
     const qs = params.toString();
     return request<ProfileDetail>(`/profiles/${id}${qs ? `?${qs}` : ""}`);
   },
-  deleteProfile: (id: string) => request<void>(`/profiles/${id}`, { method: "DELETE" }),
-  refreshProfile: (id: string) => request<ProfileMeta>(`/profiles/${id}/refresh`, { method: "POST" }),
-  updateLabel: (id: string, label: string) =>
-    request<void>(`/profiles/${id}/label`, { method: "PUT", body: JSON.stringify({ label }) }),
-  exportProfile: (id: string) => {
-    window.open(`${BASE}/profiles/${id}/raw`, "_blank");
+
+  deleteProfile: (id: string): Promise<void> =>
+    isWails() ? wailsCall("DeleteProfile", id) : request<void>(`/profiles/${id}`, { method: "DELETE" }),
+
+  refreshProfile: (id: string): Promise<ProfileMeta> =>
+    isWails() ? wailsCall("RefreshProfile", id) : request<ProfileMeta>(`/profiles/${id}/refresh`, { method: "POST" }),
+
+  updateLabel: (id: string, label: string): Promise<void> =>
+    isWails()
+      ? wailsCall("UpdateLabel", id, label)
+      : request<void>(`/profiles/${id}/label`, { method: "PUT", body: JSON.stringify({ label }) }),
+
+  exportProfile: (id: string): void => {
+    if (isWails()) {
+      wailsCall("ExportProfileData", id).then((data: number[]) => {
+        const blob = new Blob([new Uint8Array(data)]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${id}.pb.gz`;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    } else {
+      window.open(`${BASE}/profiles/${id}/raw`, "_blank");
+    }
   },
 
-  diffProfiles: (baseId: string, compareId: string) =>
-    request<ProfileDetail>(`/profiles/diff?base=${baseId}&compare=${compareId}`),
+  diffProfiles: (baseId: string, compareId: string): Promise<ProfileDetail> =>
+    isWails()
+      ? wailsCall("DiffProfiles", baseId, compareId)
+      : request<ProfileDetail>(`/profiles/diff?base=${baseId}&compare=${compareId}`),
 
-  setTags: (id: string, tags: string[]) =>
-    request<void>(`/profiles/${id}/tags`, { method: "PUT", body: JSON.stringify({ tags }) }),
-  listTags: () => request<string[]>("/tags"),
+  setTags: (id: string, tags: string[]): Promise<void> =>
+    isWails()
+      ? wailsCall("SetTags", id, tags)
+      : request<void>(`/profiles/${id}/tags`, { method: "PUT", body: JSON.stringify({ tags }) }),
 
-  getProcessInfo: (targetId: string) => request<ProcessInfo>(`/targets/${targetId}/process-info`),
-  getAvailableProfiles: (targetId: string) => request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),
-  getExpvars: (targetId: string) => request<{ timestamp: string; metrics: Record<string, any> }>(`/targets/${targetId}/expvars`),
-  getTraceData: (profileId: string) => request<TraceData>(`/profiles/${profileId}/trace-data`),
-  getGoroutineGroups: (targetId: string, top?: number) =>
-    request<GoroutineGroupsResponse>(`/targets/${targetId}/goroutine-groups${top ? `?top=${top}` : ""}`),
+  listTags: (): Promise<string[]> =>
+    isWails() ? wailsCall("ListTags") : request<string[]>("/tags"),
 
-  getMemStatsHistory: (targetId: string, since?: string) => {
+  getProcessInfo: (targetId: string): Promise<ProcessInfo> =>
+    isWails() ? wailsCall("GetProcessInfo", targetId) : request<ProcessInfo>(`/targets/${targetId}/process-info`),
+
+  getAvailableProfiles: (targetId: string): Promise<AvailableProfile[]> =>
+    isWails() ? wailsCall("GetAvailableProfiles", targetId) : request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),
+
+  getExpvars: (targetId: string): Promise<{ timestamp: string; metrics: Record<string, any> }> =>
+    isWails() ? wailsCall("GetExpvars", targetId) : request<{ timestamp: string; metrics: Record<string, any> }>(`/targets/${targetId}/expvars`),
+
+  getTraceData: (profileId: string): Promise<TraceData> =>
+    isWails() ? wailsCall("GetTraceData", profileId) : request<TraceData>(`/profiles/${profileId}/trace-data`),
+
+  getGoroutineGroups: (targetId: string, top?: number): Promise<GoroutineGroupsResponse> =>
+    isWails()
+      ? wailsCall("GetGoroutineGroups", targetId, top ?? 20)
+      : request<GoroutineGroupsResponse>(`/targets/${targetId}/goroutine-groups${top ? `?top=${top}` : ""}`),
+
+  getMemStatsHistory: (targetId: string, since?: string): Promise<MemStatsHistory> => {
+    if (isWails()) {
+      return wailsCall("GetMemStatsHistory", targetId, since ?? "");
+    }
     const qs = since ? `?since=${encodeURIComponent(since)}` : "";
     return request<MemStatsHistory>(`/targets/${targetId}/memstats/history${qs}`);
   },

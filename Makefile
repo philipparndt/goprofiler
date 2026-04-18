@@ -1,6 +1,24 @@
-.PHONY: all build build-frontend build-backend dev dev-frontend dev-backend clean
+.PHONY: all build build-frontend build-backend dev dev-frontend dev-backend build-desktop dev-desktop run run-desktop clean help
 
 all: build
+
+help:
+	@echo "Usage: make [target]"
+	@echo ""
+	@echo "Web app:"
+	@echo "  build           Build frontend + backend (web)"
+	@echo "  build-frontend  Build frontend only"
+	@echo "  build-backend   Build Go binary only"
+	@echo "  dev             Run frontend + backend dev servers"
+	@echo "  run             Build and run the web binary"
+	@echo ""
+	@echo "Desktop app (Wails):"
+	@echo "  build-desktop   Build native desktop app"
+	@echo "  dev-desktop     Run Wails dev server with hot-reload"
+	@echo "  run-desktop     Build and run the desktop app"
+	@echo ""
+	@echo "Other:"
+	@echo "  clean           Remove all build artifacts"
 
 # Build everything: frontend then backend (with embedded SPA)
 build: build-frontend build-backend
@@ -26,9 +44,19 @@ dev-frontend:
 dev-backend:
 	go run ./cmd/goprofiler --log-level debug
 
+# Desktop (Wails) build
+build-desktop: build-frontend
+	wails build
+
+dev-desktop:
+	wails dev
+
 # Run the built binary
 run: build
 	./bin/goprofiler
+
+run-desktop: build-desktop
+	open build/bin/GoProfiler.app
 
 clean:
 	rm -rf bin/
