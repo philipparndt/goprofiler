@@ -14,7 +14,7 @@ interface GCEvent {
   gcNum: number;
 }
 
-const MAX_POINTS = 300;
+const MAX_POINTS = 7200;
 const COLORS = {
   heapAlloc: "#22c55e",
   heapSys: "#6366f1",
@@ -22,7 +22,7 @@ const COLORS = {
   gc: "#ef4444",
 };
 
-export default function MemoryChart({ targetId, active }: { targetId: string; active: boolean }) {
+export default function MemoryChart({ targetId, active, windowMs = 300000 }: { targetId: string; active: boolean; windowMs?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dataRef = useRef<DataPoint[]>([]);
   const gcEventsRef = useRef<GCEvent[]>([]);
@@ -119,7 +119,9 @@ export default function MemoryChart({ targetId, active }: { targetId: string; ac
     const chartW = w - pad.left - pad.right;
     const chartH = h - pad.top - pad.bottom;
 
-    const data = dataRef.current;
+    const allData = dataRef.current;
+    const cutoff = Date.now() - windowMs;
+    const data = allData.filter((d) => d.time >= cutoff);
     if (data.length < 2) return;
 
     ctx.fillStyle = "#0a0a0f";
@@ -209,7 +211,7 @@ export default function MemoryChart({ targetId, active }: { targetId: string; ac
       ctx.stroke();
       ctx.setLineDash([]);
     }
-  }, [latest, hoverInfo]);
+  }, [latest, hoverInfo, windowMs]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -218,7 +220,8 @@ export default function MemoryChart({ targetId, active }: { targetId: string; ac
     const x = e.clientX - rect.left;
     const padLeft = 70, padRight = 16;
     const chartW = rect.width - padLeft - padRight;
-    const data = dataRef.current;
+    const cutoff = Date.now() - windowMs;
+    const data = dataRef.current.filter((d) => d.time >= cutoff);
     if (data.length < 2) return;
 
     const ratio = (x - padLeft) / chartW;

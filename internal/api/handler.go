@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/pprof/profile"
 	"github.com/google/uuid"
-	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
+	"github.com/philipparndt/go-logger"
 
 	"github.com/philipparndt/goprofiler/internal/connection"
 	"github.com/philipparndt/goprofiler/internal/expvar"
@@ -83,6 +83,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Delete("/{id}", h.deleteProfile)
 		r.Put("/{id}/label", h.updateLabel)
 		r.Put("/{id}/tags", h.setTags)
+		r.Post("/{id}/refresh", h.refreshProfile)
 		r.Get("/{id}/raw", h.exportProfile)
 		r.Get("/{id}/trace-data", h.getTraceData)
 	})
@@ -221,12 +222,12 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 		for _, pt := range types {
 			collected, err := h.collector.CollectSnapshot(r.Context(), target.URL, pt)
 			if err != nil {
-				vlog.Error("snapshot failed", "type", pt, "error", err)
+				logger.Error("snapshot failed", "type", pt, "error", err)
 				continue
 			}
 			rec, err := h.saveCollected(collected)
 			if err != nil {
-				vlog.Error("save failed", "type", pt, "error", err)
+				logger.Error("save failed", "type", pt, "error", err)
 				continue
 			}
 			results = append(results, *rec)
@@ -549,6 +550,7 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 			"durationSec": rec.DurationSec,
 			"size":        rec.Size,
 			"label":       rec.Label,
+			"tags":        rec.Tags,
 			"traceType":   true,
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -566,8 +568,19 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 		flamegraph.FilterPprofOverhead(prof)
 	}
 
-	result := flamegraph.Convert(prof)
-	callTree := flamegraph.BuildCallTree(prof)
+	// Determine value index override for heap profiles
+	valueOverride := -1
+	if r.URL.Query().Get("valueMode") == "alloc" && len(prof.SampleType) >= 4 {
+		for i, st := range prof.SampleType {
+			if st.Type == "alloc_space" && st.Unit == "bytes" {
+				valueOverride = i
+				break
+			}
+		}
+	}
+
+	result := flamegraph.Convert(prof, valueOverride)
+	callTree := flamegraph.BuildCallTree(prof, valueOverride)
 
 	resp := map[string]any{
 		"id":           rec.ID,
@@ -577,6 +590,7 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 		"durationSec":  rec.DurationSec,
 		"size":         rec.Size,
 		"label":        rec.Label,
+		"tags":         rec.Tags,
 		"flameGraph":   result.FlameGraph,
 		"topFunctions": result.TopFunctions,
 		"callTree":     callTree,
@@ -643,6 +657,98 @@ func (h *Handler) setTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) refreshProfile(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	rec, err := h.storage.GetProfile(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Only allow refresh for snapshot types
+	recordingTypes := map[string]bool{"cpu": true, "trace": true}
+	if recordingTypes[rec.Type] {
+		writeError(w, http.StatusBadRequest, "refresh is only available for snapshot profiles, not recordings")
+		return
+	}
+
+	// Read old data before overwriting (for diff computation)
+	oldData, _ := h.storage.GetProfileData(id)
+
+	// Collect fresh snapshot
+	ptype := profiler.ProfileType(rec.Type)
+	collected, err := h.collector.CollectSnapshot(r.Context(), rec.TargetURL, ptype)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	// Overwrite existing data
+	if err := h.storage.RefreshProfile(id, collected.Data, collected.Timestamp); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Evict caches
+	h.mu.Lock()
+	delete(h.traceCache, id)
+	h.mu.Unlock()
+
+	// Build response
+	updated, _ := h.storage.GetProfile(id)
+	if updated == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	resp := map[string]any{
+		"id":          updated.ID,
+		"targetURL":   updated.TargetURL,
+		"type":        updated.Type,
+		"timestamp":   updated.Timestamp,
+		"durationSec": updated.DurationSec,
+		"size":        updated.Size,
+		"label":       updated.Label,
+		"tags":        updated.Tags,
+	}
+
+	// Compute alloc diff if we have old data and it's a heap-like profile
+	if oldData != nil && len(oldData) > 0 {
+		oldProf, oldErr := profile.ParseData(oldData)
+		newProf, newErr := profile.ParseData(collected.Data)
+		if oldErr == nil && newErr == nil {
+			// Find alloc_space index
+			allocIdx := -1
+			for i, st := range newProf.SampleType {
+				if st.Type == "alloc_space" && st.Unit == "bytes" {
+					allocIdx = i
+					break
+				}
+			}
+			if allocIdx >= 0 {
+				// Apply pprof filter to both before diffing
+				flamegraph.FilterPprofOverhead(oldProf)
+				flamegraph.FilterPprofOverhead(newProf)
+				// Compute diff: negate old, merge with new
+				oldProf.Scale(-1)
+				merged, mergeErr := profile.Merge([]*profile.Profile{oldProf, newProf})
+				if mergeErr == nil {
+					diffResult := flamegraph.Convert(merged, allocIdx)
+					diffCallTree := flamegraph.BuildCallTree(merged, allocIdx)
+					resp["refreshDiff"] = map[string]any{
+						"flameGraph":   diffResult.FlameGraph,
+						"topFunctions": diffResult.TopFunctions,
+						"callTree":     diffCallTree,
+					}
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {

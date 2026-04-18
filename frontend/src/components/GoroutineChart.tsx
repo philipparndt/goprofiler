@@ -14,12 +14,12 @@ interface GoroutineGroup {
   stack: string;
 }
 
-const MAX_POINTS = 300;
+const MAX_POINTS = 7200;
 const GOROUTINE_THRESHOLD = 1000;
 const COLOR = "#f59e0b";
 const THRESHOLD_COLOR = "#ef4444";
 
-export default function GoroutineChart({ targetId, active }: { targetId: string; active: boolean }) {
+export default function GoroutineChart({ targetId, active, windowMs = 300000 }: { targetId: string; active: boolean; windowMs?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dataRef = useRef<DataPoint[]>([]);
   const lastTimestampRef = useRef<string>("");
@@ -101,7 +101,8 @@ export default function GoroutineChart({ targetId, active }: { targetId: string;
     const chartW = w - pad.left - pad.right;
     const chartH = h - pad.top - pad.bottom;
 
-    const data = dataRef.current;
+    const cutoff = Date.now() - windowMs;
+    const data = dataRef.current.filter((d) => d.time >= cutoff);
     if (data.length < 2) return;
 
     ctx.fillStyle = "#0a0a0f";
@@ -180,14 +181,15 @@ export default function GoroutineChart({ targetId, active }: { targetId: string;
       ctx.stroke();
       ctx.setLineDash([]);
     }
-  }, [latest, hoverInfo]);
+  }, [latest, hoverInfo, windowMs]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const data = dataRef.current;
+    const cutoff = Date.now() - windowMs;
+    const data = dataRef.current.filter((d) => d.time >= cutoff);
     if (data.length < 2) return;
     const ratio = (x - 60) / (rect.width - 76);
     const idx = Math.round(ratio * (data.length - 1));

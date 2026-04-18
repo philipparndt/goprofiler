@@ -32,6 +32,7 @@ export default function ConnectionDetail() {
   const [addTagProfileId, setAddTagProfileId] = useState<string | null>(null);
   const [addTagInput, setAddTagInput] = useState("");
   const [compareBaseProfile, setCompareBaseProfile] = useState<ProfileMeta | null>(null);
+  const [monitorWindow, setMonitorWindow] = useState(5); // minutes
   const [notFound, setNotFound] = useState(false);
   const [processInfo, setProcessInfo] = useState<ProcessInfo | null>(null);
 
@@ -246,9 +247,22 @@ export default function ConnectionDetail() {
                                       color: "var(--accent)",
                                       border: "1px solid rgba(99,102,241,0.3)",
                                       letterSpacing: "0.03em",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 3,
                                     }}
                                   >
                                     {tag}
+                                    <span
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        const newTags = tags.filter((t) => t !== tag);
+                                        await api.setTags(p.id, newTags);
+                                        if (target) loadProfiles(target.url);
+                                        loadTags();
+                                      }}
+                                      style={{ cursor: "pointer", opacity: 0.6, fontSize: 12, lineHeight: 1 }}
+                                    >&times;</span>
                                   </span>
                                 ))}
                                 {isAddingTag ? (
@@ -343,13 +357,32 @@ export default function ConnectionDetail() {
       {/* Monitor tab */}
       {tab === "monitor" && target.status === "connected" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>Window:</span>
+            {[
+              { label: "1m", minutes: 1 },
+              { label: "5m", minutes: 5 },
+              { label: "15m", minutes: 15 },
+              { label: "30m", minutes: 30 },
+              { label: "1h", minutes: 60 },
+              { label: "2h", minutes: 120 },
+            ].map((opt) => (
+              <button
+                key={opt.minutes}
+                className={`btn btn-sm ${monitorWindow === opt.minutes ? "btn-primary" : "btn-secondary"}`}
+                onClick={() => setMonitorWindow(opt.minutes)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Memory</h2>
-            <MemoryChart targetId={target.id} active={tab === "monitor"} />
+            <MemoryChart targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
           </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Goroutines</h2>
-            <GoroutineChart targetId={target.id} active={tab === "monitor"} />
+            <GoroutineChart targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
           </div>
         </div>
       )}

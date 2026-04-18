@@ -20,12 +20,17 @@ type CallTreeNode struct {
 	Children     []*CallTreeNode `json:"children,omitempty"`
 }
 
-func BuildCallTree(p *profile.Profile) *CallTreeNode {
+// BuildCallTree builds a call tree from a profile.
+// Optional overrideIdx overrides the value index selection (pass -1 or omit for auto).
+func BuildCallTree(p *profile.Profile, overrideIdx ...int) *CallTreeNode {
 	if len(p.Sample) == 0 {
 		return &CallTreeNode{Name: "root"}
 	}
 
 	valueIdx := bestValueIndex(p)
+	if len(overrideIdx) > 0 && overrideIdx[0] >= 0 && overrideIdx[0] < len(p.SampleType) {
+		valueIdx = overrideIdx[0]
+	}
 
 	allocIdx := -1
 	if len(p.SampleType) >= 4 {

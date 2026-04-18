@@ -16,11 +16,27 @@ interface SpanDetail {
   stack?: string[];
 }
 
+interface CompactSegment {
+  realStart: number; // nanoseconds
+  realEnd: number;   // nanoseconds
+  pxStart: number;   // pixel offset from labelWidth
+  pxEnd: number;     // pixel offset
+}
+
+interface CompactBreak {
+  realStart: number;
+  realEnd: number;
+  pxStart: number;
+  pxWidth: number;   // always BREAK_WIDTH (40px)
+  durationLabel: string;
+}
+
 const ROW_HEIGHT = 24;
 const DEFAULT_LABEL_WIDTH = 180;
 const TIME_AXIS_HEIGHT = 28;
 const MINIMAP_HEIGHT = 40;
 const MINIMAP_PADDING = 6; // vertical padding inside minimap rows
+const BREAK_WIDTH = 40;    // pixels for compact break zones
 
 const STATE_COLORS: Record<string, string> = {
   running:  "#22c55e",
@@ -55,6 +71,159 @@ function niceTickInterval(rangeNs: number, maxTicks: number): number {
   return best;
 }
 
+/**
+ * Convert a nanosecond time value to a pixel position.
+ * When segments/breaks are provided (compact mode), uses piecewise mapping.
+ * Falls back to linear mapping otherwise.
+ */
+function nsToPixel(
+  ns: number,
+  segments: CompactSegment[] | null,
+  breaks: CompactBreak[] | null,
+  labelW: number,
+  drawW: number,
+  viewStartNs: number,
+  viewEndNs: number,
+): number {
+  if (!segments || !breaks) {
+    const viewRange = viewEndNs - viewStartNs || 1;
+    return labelW + ((ns - viewStartNs) / viewRange) * drawW;
+  }
+
+  // Check if ns falls within a break zone
+  for (const brk of breaks) {
+    if (ns >= brk.realStart && ns <= brk.realEnd) {
+      // Map to center of break pixel range
+      return brk.pxStart + labelW + brk.pxWidth / 2;
+    }
+  }
+
+  // Find the segment that contains ns
+  for (const seg of segments) {
+    if (ns >= seg.realStart && ns <= seg.realEnd) {
+      const segRange = seg.realEnd - seg.realStart || 1;
+      const frac = (ns - seg.realStart) / segRange;
+      return labelW + seg.pxStart + frac * (seg.pxEnd - seg.pxStart);
+    }
+  }
+
+  // Outside all segments: clamp to nearest edge
+  if (segments.length === 0) {
+    const viewRange = viewEndNs - viewStartNs || 1;
+    return labelW + ((ns - viewStartNs) / viewRange) * drawW;
+  }
+  if (ns < segments[0].realStart) {
+    return labelW + segments[0].pxStart;
+  }
+  const last = segments[segments.length - 1];
+  return labelW + last.pxEnd;
+}
+
+/**
+ * Convert a pixel position to nanoseconds (inverse of nsToPixel).
+ * When segments/breaks are provided (compact mode), uses piecewise inverse.
+ * Falls back to linear inverse otherwise.
+ */
+function pixelToNs(
+  px: number,
+  segments: CompactSegment[] | null,
+  breaks: CompactBreak[] | null,
+  labelW: number,
+  drawW: number,
+  viewStartNs: number,
+  viewEndNs: number,
+): number {
+  if (!segments || !breaks) {
+    const viewRange = viewEndNs - viewStartNs || 1;
+    return viewStartNs + ((px - labelW) / drawW) * viewRange;
+  }
+
+  const relPx = px - labelW;
+
+  // Check if px falls in a break zone
+  for (const brk of breaks) {
+    if (relPx >= brk.pxStart && relPx <= brk.pxStart + brk.pxWidth) {
+      // Map to center of break real range
+      return (brk.realStart + brk.realEnd) / 2;
+    }
+  }
+
+  // Find the segment that contains relPx
+  for (const seg of segments) {
+    if (relPx >= seg.pxStart && relPx <= seg.pxEnd) {
+      const pxRange = seg.pxEnd - seg.pxStart || 1;
+      const frac = (relPx - seg.pxStart) / pxRange;
+      return seg.realStart + frac * (seg.realEnd - seg.realStart);
+    }
+  }
+
+  // Outside all segments: clamp
+  if (segments.length === 0) {
+    const viewRange = viewEndNs - viewStartNs || 1;
+    return viewStartNs + ((px - labelW) / drawW) * viewRange;
+  }
+  if (relPx < segments[0].pxStart) {
+    return segments[0].realStart;
+  }
+  return segments[segments.length - 1].realEnd;
+}
+
+/**
+ * Build compact segments and breaks from a list of merged active intervals.
+ * drawWidth is the available pixel width for the draw area (canvas width - labelWidth).
+ */
+function buildCompactLayout(
+  mergedIntervals: Array<[number, number]>,
+  gaps: Array<[number, number]>,
+  drawWidth: number,
+): { segments: CompactSegment[]; breaks: CompactBreak[] } {
+  if (mergedIntervals.length === 0) {
+    return { segments: [], breaks: [] };
+  }
+
+  // Total real time covered by active segments
+  const totalRealNs = mergedIntervals.reduce((sum, [s, e]) => sum + (e - s), 0);
+  // Total pixels used by breaks
+  const totalBreakPx = gaps.length * BREAK_WIDTH;
+  // Remaining pixels for actual content
+  const contentPx = Math.max(1, drawWidth - totalBreakPx);
+
+  const segments: CompactSegment[] = [];
+  const breaks: CompactBreak[] = [];
+
+  let cursor = 0; // current pixel offset (relative, from 0, not from labelW)
+
+  for (let i = 0; i < mergedIntervals.length; i++) {
+    const [realStart, realEnd] = mergedIntervals[i];
+    const realDuration = realEnd - realStart;
+    // Proportional pixel width for this segment
+    const segPx = totalRealNs > 0 ? (realDuration / totalRealNs) * contentPx : contentPx;
+
+    segments.push({
+      realStart,
+      realEnd,
+      pxStart: cursor,
+      pxEnd: cursor + segPx,
+    });
+    cursor += segPx;
+
+    // If there's a gap after this segment, insert a break
+    if (i < gaps.length) {
+      const [gapStart, gapEnd] = gaps[i];
+      breaks.push({
+        realStart: gapStart,
+        realEnd: gapEnd,
+        pxStart: cursor,
+        pxWidth: BREAK_WIDTH,
+        durationLabel: formatNs(gapEnd - gapStart),
+      });
+      cursor += BREAK_WIDTH;
+    }
+  }
+
+  return { segments, breaks };
+}
+
 export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -73,6 +242,8 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   const [hiddenStates, setHiddenStates] = useState<Set<string>>(new Set());
   const hiddenStatesRef = useRef<Set<string>>(new Set());
   const [isMinimapDragging, setIsMinimapDragging] = useState(false);
+  const [compact, setCompact] = useState(false);
+  const compactRef = useRef(false);
 
   // Stable refs so event handlers don't go stale
   const viewRef = useRef({ viewStartNs: traceStartNs, viewEndNs: traceEndNs, scrollTop: 0 });
@@ -90,6 +261,79 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   );
   const totalRows = goroutines.length;
   const totalContentHeight = totalRows * ROW_HEIGHT;
+
+  // ─── Compact segment computation ─────────────────────────────────────────
+  const compactLayout = useMemo((): { segments: CompactSegment[]; breaks: CompactBreak[] } | null => {
+    if (!compact) return null;
+
+    // Collect all visible span intervals
+    const intervals: Array<[number, number]> = [];
+    for (const g of goroutines) {
+      for (const span of g.spans) {
+        if (hiddenStates.has(span.state)) continue;
+        intervals.push([span.start, span.end]);
+      }
+    }
+
+    if (intervals.length === 0) return null;
+
+    // Sort by start
+    intervals.sort((a, b) => a[0] - b[0]);
+
+    // Merge overlapping / adjacent intervals
+    const merged: Array<[number, number]> = [];
+    let [curStart, curEnd] = intervals[0];
+    for (let i = 1; i < intervals.length; i++) {
+      const [s, e] = intervals[i];
+      if (s <= curEnd) {
+        curEnd = Math.max(curEnd, e);
+      } else {
+        merged.push([curStart, curEnd]);
+        curStart = s;
+        curEnd = e;
+      }
+    }
+    merged.push([curStart, curEnd]);
+
+    // Gap threshold: max(1ms, 2% of total trace duration)
+    const gapThreshold = Math.max(1_000_000, (traceEndNs - traceStartNs) * 0.02);
+
+    // Find significant gaps between merged intervals
+    const gaps: Array<[number, number]> = [];
+    const activeIntervals: Array<[number, number]> = [];
+
+    for (let i = 0; i < merged.length; i++) {
+      if (i === 0) {
+        activeIntervals.push(merged[i]);
+      } else {
+        const gapStart = merged[i - 1][1];
+        const gapEnd = merged[i][0];
+        if (gapEnd - gapStart > gapThreshold) {
+          gaps.push([gapStart, gapEnd]);
+          activeIntervals.push(merged[i]);
+        } else {
+          // Merge small gap into previous segment
+          activeIntervals[activeIntervals.length - 1] = [
+            activeIntervals[activeIntervals.length - 1][0],
+            merged[i][1],
+          ];
+        }
+      }
+    }
+
+    // Get current draw width from canvas (use ref so this is stable)
+    const canvas = mainCanvasRef.current;
+    const drawWidth = canvas
+      ? canvas.getBoundingClientRect().width - labelWidthRef.current
+      : 800 - labelWidthRef.current;
+
+    return buildCompactLayout(activeIntervals, gaps, drawWidth);
+  }, [compact, goroutines, hiddenStates, traceEndNs, traceStartNs]);
+
+  // Keep a ref so canvas draw callbacks can access without stale closures
+  const compactLayoutRef = useRef(compactLayout);
+  compactLayoutRef.current = compactLayout;
+  compactRef.current = compact;
 
   // ─── Draw minimap ────────────────────────────────────────────────────────────
   const drawMinimap = useCallback(() => {
@@ -184,6 +428,14 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     const viewRange = veNs - vsNs || 1;
     const drawW = W - labelWidthRef.current;
 
+    const layout = compactLayoutRef.current;
+    const segments = layout?.segments ?? null;
+    const breaks = layout?.breaks ?? null;
+
+    // Helper: ns -> pixel (accounts for compact layout)
+    const toX = (ns: number) =>
+      nsToPixel(ns, segments, breaks, labelWidthRef.current, drawW, vsNs, veNs);
+
     // Background
     ctx.fillStyle = "#0a0a0f";
     ctx.fillRect(0, 0, W, H);
@@ -209,7 +461,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     ctx.textBaseline = "middle";
 
     for (let t = firstTick; t <= veNs; t += tickInterval) {
-      const x = labelWidthRef.current + ((t - vsNs) / viewRange) * drawW;
+      const x = toX(t);
       ctx.strokeStyle = "#1f1f2e";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -230,11 +482,16 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
 
     // GC bands (behind rows)
     for (const gc of data.gcEvents) {
-      const x0 = labelWidthRef.current + ((gc.start - vsNs) / viewRange) * drawW;
-      const x1 = labelWidthRef.current + ((gc.end - vsNs) / viewRange) * drawW;
+      const x0 = toX(gc.start);
+      const x1 = toX(gc.end);
       if (x1 < labelWidthRef.current || x0 > W) continue;
       ctx.fillStyle = "rgba(239,68,68,0.15)";
-      ctx.fillRect(Math.max(x0, labelWidthRef.current), TIME_AXIS_HEIGHT, Math.min(x1, W) - Math.max(x0, labelWidthRef.current), H - TIME_AXIS_HEIGHT);
+      ctx.fillRect(
+        Math.max(x0, labelWidthRef.current),
+        TIME_AXIS_HEIGHT,
+        Math.min(x1, W) - Math.max(x0, labelWidthRef.current),
+        H - TIME_AXIS_HEIGHT,
+      );
     }
 
     // Visible goroutine rows
@@ -286,8 +543,8 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
         if (hiddenStatesRef.current.has(span.state)) continue;
         if (span.end < vsNs || span.start > veNs) continue;
 
-        const x0 = labelWidthRef.current + ((span.start - vsNs) / viewRange) * drawW;
-        const x1 = labelWidthRef.current + ((span.end - vsNs) / viewRange) * drawW;
+        const x0 = toX(span.start);
+        const x1 = toX(span.end);
         const clampedX0 = Math.max(x0, labelWidthRef.current);
         const clampedX1 = Math.min(x1, W);
         const w = clampedX1 - clampedX0;
@@ -315,6 +572,62 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
       }
     }
 
+    // ─── Draw compact break zones ────────────────────────────────────────────
+    if (breaks && breaks.length > 0) {
+      for (const brk of breaks) {
+        const bx = labelWidthRef.current + brk.pxStart;
+        const bw = brk.pxWidth;
+
+        // Only draw if visible
+        if (bx + bw < labelWidthRef.current || bx > W) continue;
+
+        // Dark background for break zone
+        ctx.fillStyle = "rgba(10,10,15,0.85)";
+        ctx.fillRect(bx, TIME_AXIS_HEIGHT, bw, H - TIME_AXIS_HEIGHT);
+
+        // Diagonal hatching at 45°
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(bx, TIME_AXIS_HEIGHT, bw, H - TIME_AXIS_HEIGHT);
+        ctx.clip();
+        ctx.strokeStyle = "rgba(90,90,110,0.35)";
+        ctx.lineWidth = 1;
+        const step = 8;
+        const totalH = H - TIME_AXIS_HEIGHT;
+        for (let d = -totalH; d < bw + totalH; d += step) {
+          ctx.beginPath();
+          ctx.moveTo(bx + d, TIME_AXIS_HEIGHT);
+          ctx.lineTo(bx + d + totalH, TIME_AXIS_HEIGHT + totalH);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Left and right border lines
+        ctx.strokeStyle = "rgba(90,90,110,0.6)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(bx + 0.5, TIME_AXIS_HEIGHT);
+        ctx.lineTo(bx + 0.5, H);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(bx + bw - 0.5, TIME_AXIS_HEIGHT);
+        ctx.lineTo(bx + bw - 0.5, H);
+        ctx.stroke();
+
+        // Duration label centered in break zone (time axis row)
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(bx, 0, bw, TIME_AXIS_HEIGHT);
+        ctx.clip();
+        ctx.fillStyle = "#6b6b7e";
+        ctx.font = `9px 'JetBrains Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(brk.durationLabel, bx + bw / 2, TIME_AXIS_HEIGHT / 2);
+        ctx.restore();
+      }
+    }
+
     // Label column right border
     ctx.strokeStyle = "#2a2a3a";
     ctx.lineWidth = 1;
@@ -337,7 +650,7 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
   useEffect(() => {
     drawTimeline();
     drawMinimap();
-  }, [viewStartNs, viewEndNs, scrollTop, labelWidth, hiddenStates, drawTimeline, drawMinimap]);
+  }, [viewStartNs, viewEndNs, scrollTop, labelWidth, hiddenStates, compact, compactLayout, drawTimeline, drawMinimap]);
 
   // ─── Resize observer ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -390,8 +703,13 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     // Zoom centered on cursor
     const cursorX = e.clientX - rect.left;
     const drawW = rect.width - labelWidthRef.current;
+    const layout = compactLayoutRef.current;
+    const segments = layout?.segments ?? null;
+    const breakZones = layout?.breaks ?? null;
+
+    // Convert cursor pixel to ns using the current mapping
+    const cursorNs = pixelToNs(cursorX, segments, breakZones, labelWidthRef.current, drawW, vsNs, veNs);
     const cursorFrac = Math.max(0, Math.min(1, (cursorX - labelWidthRef.current) / drawW));
-    const cursorNs = vsNs + cursorFrac * viewRange;
 
     const zoomFactor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
     let newRange = viewRange * zoomFactor;
@@ -435,8 +753,8 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
     const viewRange = startViewEnd - startViewStart;
     const panAmt = -(dx / drawW) * viewRange;
 
-    let newStart = Math.max(traceStartNs, Math.min(startViewStart + panAmt, traceEndNs - viewRange));
-    let newEnd = newStart + viewRange;
+    const newStart = Math.max(traceStartNs, Math.min(startViewStart + panAmt, traceEndNs - viewRange));
+    const newEnd = newStart + viewRange;
 
     setViewStartNs(newStart);
     setViewEndNs(newEnd);
@@ -453,14 +771,17 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const { viewStartNs: vsNs, viewEndNs: veNs, scrollTop: st } = viewRef.current;
-      const viewRange = veNs - vsNs;
       const drawW = rect.width - labelWidthRef.current;
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
       if (mouseX < labelWidthRef.current || mouseY < TIME_AXIS_HEIGHT) return;
 
-      const clickNs = vsNs + ((mouseX - labelWidthRef.current) / drawW) * viewRange;
+      const layout = compactLayoutRef.current;
+      const segments = layout?.segments ?? null;
+      const breakZones = layout?.breaks ?? null;
+      const clickNs = pixelToNs(mouseX, segments, breakZones, labelWidthRef.current, drawW, vsNs, veNs);
+
       const rowIdx = Math.floor((mouseY - TIME_AXIS_HEIGHT + st) / ROW_HEIGHT);
       if (rowIdx < 0 || rowIdx >= goroutines.length) return;
 
@@ -627,6 +948,10 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
         </span>
         {/* State filter toggles */}
         <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, marginLeft: "auto" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-secondary)", cursor: "pointer" }}>
+            <input type="checkbox" checked={compact} onChange={(e) => setCompact(e.target.checked)} />
+            Compact
+          </label>
           {Object.entries(STATE_COLORS).map(([state, color]) => {
             const isHidden = hiddenStates.has(state);
             return (

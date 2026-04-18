@@ -11,8 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
-	vlogchi "github1.vg.vector.int/pes/vehub-vlog-go/chi"
+	"github.com/philipparndt/go-logger"
+	loggerchi "github.com/philipparndt/go-logger-chi"
 
 	"github.com/philipparndt/goprofiler/internal/api"
 	"github.com/philipparndt/goprofiler/internal/connection"
@@ -27,7 +27,7 @@ func main() {
 	logLevel := flag.String("log-level", "info", "log level (trace, debug, info, warn, error)")
 	flag.Parse()
 
-	vlog.Init(*logLevel, vlog.Logger())
+	logger.SetLevel(*logLevel)
 
 	if *dataDir == "" {
 		home, _ := os.UserHomeDir()
@@ -36,7 +36,7 @@ func main() {
 
 	store, err := storage.NewStore(*dataDir)
 	if err != nil {
-		vlog.Error("failed to initialize storage", "error", err)
+		logger.Error("failed to initialize storage", "error", err)
 		os.Exit(1)
 	}
 	defer store.Close()
@@ -45,7 +45,7 @@ func main() {
 	configDir := filepath.Join(home, ".config", "goprofiler")
 	connStore, err := connection.NewStore(configDir)
 	if err != nil {
-		vlog.Error("failed to initialize connection store", "error", err)
+		logger.Error("failed to initialize connection store", "error", err)
 		os.Exit(1)
 	}
 	defer connStore.Close()
@@ -65,8 +65,7 @@ func main() {
 	handler := api.NewHandler(connStore, store, monitorSvc)
 
 	r := chi.NewRouter()
-	middleware.DefaultLogger = vlogchi.LoggerWithLevel(-4)
-	r.Use(middleware.Logger)
+	r.Use(loggerchi.Middleware())
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:*"},
@@ -80,7 +79,7 @@ func main() {
 	// Serve frontend SPA
 	frontendDist, err := fs.Sub(fe.FS, "dist")
 	if err != nil {
-		vlog.Error("failed to load frontend", "error", err)
+		logger.Error("failed to load frontend", "error", err)
 		os.Exit(1)
 	}
 
@@ -99,9 +98,9 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%s", *port)
-	vlog.Info("GoProfiler starting", "addr", addr, "data-dir", *dataDir)
+	logger.Info("GoProfiler starting", "addr", addr, "data-dir", *dataDir)
 	if err := http.ListenAndServe(addr, r); err != nil {
-		vlog.Error("server error", "error", err)
+		logger.Error("server error", "error", err)
 		os.Exit(1)
 	}
 }

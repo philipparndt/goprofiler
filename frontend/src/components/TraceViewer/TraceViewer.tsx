@@ -40,6 +40,11 @@ export default function TraceViewer({ profileId }: Props) {
     api
       .getTraceData(profileId)
       .then((d) => {
+        // Normalize null arrays from Go's JSON marshaling
+        d.goroutines = d.goroutines || [];
+        d.gcEvents = d.gcEvents || [];
+        d.processors = d.processors || [];
+        d.blockingSummary = d.blockingSummary || [];
         setData(d);
         setLoading(false);
       })

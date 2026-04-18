@@ -19,16 +19,27 @@ export default function ProfileViewer() {
   const [colorMode, setColorMode] = useState<"package" | "heat">("package");
   const [inverted, setInverted] = useState(false);
   const [filterPprof, setFilterPprof] = useState(true);
+  const [valueMode, setValueMode] = useState<"inuse" | "alloc">("inuse");
+  const [refreshing, setRefreshing] = useState(false);
+  const [prevHeapSummary, setPrevHeapSummary] = useState<any>(null);
+  const [refreshDiff, setRefreshDiff] = useState<any>(null);
+  const [showNewAllocs, setShowNewAllocs] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
+
+  const isHeapProfile = profile?.type === "heap" || profile?.type === "allocs";
 
   const loadProfile = () => {
     if (!id) return;
     const filter = filterPprof ? "pprof" : undefined;
-    api.getProfile(id, filter).then(setProfile).catch(() => {});
+    const vm = valueMode === "alloc" ? "alloc" : undefined;
+    api.getProfile(id, { filter, valueMode: vm }).then(setProfile).catch(() => {});
   };
 
-  useEffect(() => { loadProfile(); }, [id, filterPprof]);
+  useEffect(() => { loadProfile(); setPrevHeapSummary(null); setRefreshDiff(null); setShowNewAllocs(false); }, [id]);
+  useEffect(() => { loadProfile(); }, [filterPprof, valueMode]);
+
+  const fgData = showNewAllocs && refreshDiff?.flameGraph ? refreshDiff.flameGraph : profile?.flameGraph;
 
   useEffect(() => {
     if (!profile || !chartRef.current || tab !== "flamegraph") return;
@@ -43,10 +54,17 @@ export default function ProfileViewer() {
       .minFrameSize(1)
       .transitionDuration(300)
       .tooltip(true)
-      .selfValue(true)
+      .selfValue(false)
       .setColorMapper((d: any) => {
+        // Diff color scheme for new allocations view
+        if (showNewAllocs) {
+          const v = d.data?.value || 0;
+          if (v > 0) return "#ef4444"; // red = new allocations
+          if (v < 0) return "#3b82f6"; // blue = freed
+          return "#4b5563"; // gray = unchanged
+        }
         if (colorMode === "heat") {
-          const ratio = d.highlight ? 1 : (d.data?.value || 0) / (profile.flameGraph?.value || 1);
+          const ratio = d.highlight ? 1 : (d.data?.value || 0) / (fgData?.value || 1);
           const r = Math.round(200 + 55 * ratio);
           const g = Math.round(100 * (1 - ratio));
           const b = Math.round(50 * (1 - ratio));
@@ -67,9 +85,9 @@ export default function ProfileViewer() {
     fgRef.current = chart;
 
     select(chartRef.current)
-      .datum(profile.flameGraph)
+      .datum(fgData)
       .call(chart as any);
-  }, [profile, colorMode, inverted, tab]);
+  }, [profile, colorMode, inverted, tab, showNewAllocs, refreshDiff]);
 
   useEffect(() => {
     if (fgRef.current && tab === "flamegraph") {
@@ -84,6 +102,31 @@ export default function ProfileViewer() {
     setSearch(name);
   }, []);
 
+  // Tag management hooks -- must be before any early returns
+  const [tags, setTags] = useState<string[]>([]);
+  const [addingTag, setAddingTag] = useState(false);
+  const [tagInput, setTagInput] = useState("");
+
+  useEffect(() => {
+    try { setTags(JSON.parse((profile as any)?.tags || "[]")); } catch { setTags([]); }
+  }, [profile]);
+
+  const addTag = async (tag: string) => {
+    if (!tag.trim() || !id) return;
+    const newTags = [...tags, tag.trim()];
+    await api.setTags(id, newTags);
+    setTags(newTags);
+    setTagInput("");
+    setAddingTag(false);
+  };
+
+  const removeTag = async (tag: string) => {
+    if (!id) return;
+    const newTags = tags.filter((t) => t !== tag);
+    await api.setTags(id, newTags);
+    setTags(newTags);
+  };
+
   if (!profile) {
     return <div className="page-header"><h1>Loading...</h1></div>;
   }
@@ -92,17 +135,86 @@ export default function ProfileViewer() {
     <div>
       <div className="page-header" style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <button className="btn btn-secondary btn-sm" onClick={() => navigate(-1)}>&larr; Back</button>
-        <div>
-          <h1>{profile.type.toUpperCase()} Profile</h1>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <h1>{profile.type.toUpperCase()} Profile</h1>
+            {tags.map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  fontSize: 11, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
+                  background: "rgba(99,102,241,0.18)", color: "var(--accent)",
+                  border: "1px solid rgba(99,102,241,0.3)", display: "inline-flex", alignItems: "center", gap: 4,
+                }}
+              >
+                {tag}
+                <span onClick={() => removeTag(tag)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 13 }}>&times;</span>
+              </span>
+            ))}
+            {addingTag ? (
+              <form onSubmit={(e) => { e.preventDefault(); addTag(tagInput); }} style={{ display: "inline-flex", gap: 4 }}>
+                <input
+                  className="input"
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  placeholder="tag name"
+                  autoFocus
+                  style={{ width: 100, padding: "2px 6px", fontSize: 12 }}
+                  onBlur={() => { if (!tagInput) setAddingTag(false); }}
+                />
+              </form>
+            ) : (
+              <button
+                className="btn btn-secondary"
+                onClick={() => setAddingTag(true)}
+                style={{ padding: "1px 6px", fontSize: 11, lineHeight: 1.4 }}
+              >+</button>
+            )}
+          </div>
           <p>{profile.targetURL} &middot; {new Date(profile.timestamp).toLocaleString()}{profile.durationSec ? ` \u00b7 ${profile.durationSec}s` : ""}</p>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {profile.type !== "cpu" && profile.type !== "trace" && (
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={refreshing}
+              onClick={async () => {
+                setRefreshing(true);
+                if ((profile as any).heapSummary) {
+                  setPrevHeapSummary((profile as any).heapSummary);
+                }
+                try {
+                  const result = await api.refreshProfile(profile.id) as any;
+                  if (result?.refreshDiff) {
+                    setRefreshDiff(result.refreshDiff);
+                  }
+                  loadProfile();
+                } catch {} finally {
+                  setRefreshing(false);
+                }
+              }}
+              title="Re-capture this snapshot"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={refreshing ? { animation: "spin 1s linear infinite" } : undefined}>
+                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={() => api.exportProfile(profile.id)} title="Download raw profile">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export
+          </button>
         </div>
       </div>
 
       {/* Heap summary bar */}
       {(profile as any).heapSummary && (
         <div className="card" style={{ marginBottom: 16, padding: "12px 16px", display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
-          <HeapStat label="In Use" value={(profile as any).heapSummary.inuseSpace} objects={(profile as any).heapSummary.inuseObjects} accent="var(--success)" />
-          <HeapStat label="Total Allocated" value={(profile as any).heapSummary.allocSpace} objects={(profile as any).heapSummary.allocObjects} accent="var(--accent)" />
+          <HeapStat label="In Use" value={(profile as any).heapSummary.inuseSpace} objects={(profile as any).heapSummary.inuseObjects} accent="var(--success)" prevValue={prevHeapSummary?.inuseSpace} prevObjects={prevHeapSummary?.inuseObjects} />
+          <HeapStat label="Total Allocated" value={(profile as any).heapSummary.allocSpace} objects={(profile as any).heapSummary.allocObjects} accent="var(--accent)" prevValue={prevHeapSummary?.allocSpace} prevObjects={prevHeapSummary?.allocObjects} />
           <label
             style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "var(--text-secondary)", marginLeft: "auto" }}
             title="Filter out pprof infrastructure overhead (runtime/pprof, text/tabwriter, etc.)"
@@ -209,6 +321,21 @@ export default function ProfileViewer() {
               <button className="btn btn-secondary btn-sm" onClick={() => fgRef.current?.resetZoom()}>
                 Reset Zoom
               </button>
+              {isHeapProfile && (
+                <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+                  <button className={`btn btn-sm ${valueMode === "inuse" && !showNewAllocs ? "btn-primary" : "btn-secondary"}`} onClick={() => { setValueMode("inuse"); setShowNewAllocs(false); }}>
+                    Inuse
+                  </button>
+                  <button className={`btn btn-sm ${valueMode === "alloc" && !showNewAllocs ? "btn-primary" : "btn-secondary"}`} onClick={() => { setValueMode("alloc"); setShowNewAllocs(false); }}>
+                    Alloc
+                  </button>
+                  {refreshDiff && (
+                    <button className={`btn btn-sm ${showNewAllocs ? "btn-primary" : "btn-secondary"}`} onClick={() => setShowNewAllocs(!showNewAllocs)} style={showNewAllocs ? { background: "var(--warning)", color: "#000" } : undefined}>
+                      New Allocs
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -216,15 +343,15 @@ export default function ProfileViewer() {
             <div ref={chartRef} style={{ minHeight: 300 }} />
           </div>
 
-          {profile.topFunctions && profile.topFunctions.length > 0 && (
-            <TopFunctionsTable functions={profile.topFunctions} onSelect={handleSelectFunction} />
+          {((showNewAllocs ? refreshDiff?.topFunctions : profile.topFunctions) || []).length > 0 && (
+            <TopFunctionsTable functions={showNewAllocs ? refreshDiff.topFunctions : profile.topFunctions} onSelect={handleSelectFunction} />
           )}
         </>
       )}
 
-      {tab === "calltree" && profile.callTree && (
+      {tab === "calltree" && (showNewAllocs ? refreshDiff?.callTree : profile.callTree) && (
         <CallTree
-          root={profile.callTree}
+          root={showNewAllocs ? refreshDiff.callTree : profile.callTree}
           onSelectFunction={handleSelectFunction}
         />
       )}
@@ -233,13 +360,34 @@ export default function ProfileViewer() {
   );
 }
 
-function HeapStat({ label, value, objects, accent }: { label: string; value: number; objects: number; accent: string }) {
+function HeapStat({ label, value, objects, accent, prevValue, prevObjects }: {
+  label: string; value: number; objects: number; accent: string;
+  prevValue?: number; prevObjects?: number;
+}) {
+  const valueDelta = prevValue != null ? value - prevValue : null;
+  const objectsDelta = prevObjects != null ? objects - prevObjects : null;
+
+  const deltaColor = (d: number) => d > 0 ? "var(--danger)" : d < 0 ? "var(--success)" : "var(--text-muted)";
+  const deltaPrefix = (d: number) => d > 0 ? "+" : "";
+
   return (
     <div>
       <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>{label}</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span className="mono" style={{ fontSize: 18, fontWeight: 700, color: accent }}>{formatTraceSize(value)}</span>
+        {valueDelta != null && (
+          <span className="mono" style={{ fontSize: 13, fontWeight: 600, color: deltaColor(valueDelta) }}>
+            {deltaPrefix(valueDelta)}{formatTraceSize(valueDelta)}
+          </span>
+        )}
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{objects.toLocaleString()} objects</span>
+        {objectsDelta != null && (
+          <span style={{ fontSize: 11, color: deltaColor(objectsDelta) }}>
+            {deltaPrefix(objectsDelta)}{objectsDelta.toLocaleString()}
+          </span>
+        )}
       </div>
     </div>
   );

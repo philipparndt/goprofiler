@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
+	"github.com/philipparndt/go-logger"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,7 +52,7 @@ func NewStore(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	vlog.Info("storage initialized", "dir", dataDir)
+	logger.Info("storage initialized", "dir", dataDir)
 	return s, nil
 }
 
@@ -254,6 +254,21 @@ func (s *Store) ListAllTags() ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func (s *Store) RefreshProfile(id string, data []byte, timestamp time.Time) error {
+	rec, err := s.GetProfile(id)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(rec.FilePath, data, 0644); err != nil {
+		return fmt.Errorf("write profile file: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE profiles SET timestamp = ?, size = ? WHERE id = ?`,
+		timestamp, int64(len(data)), id,
+	)
+	return err
 }
 
 func (s *Store) GetProfileData(id string) ([]byte, error) {

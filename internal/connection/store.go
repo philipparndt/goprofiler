@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
+	"github.com/philipparndt/go-logger"
 )
 
 type Status string
@@ -99,7 +99,7 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 			delete(s.saved, id)
 			s.persist()
 			s.mu.Unlock()
-			vlog.Info("target reconnected", "id", id, "url", rawURL)
+			logger.Info("target reconnected", "id", id, "url", rawURL)
 			if s.OnConnect != nil {
 				s.OnConnect(id, rawURL)
 			}
@@ -127,7 +127,7 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 	s.persist()
 	s.mu.Unlock()
 
-	vlog.Info("target connected", "id", t.ID, "url", t.URL)
+	logger.Info("target connected", "id", t.ID, "url", t.URL)
 	if s.OnConnect != nil {
 		s.OnConnect(t.ID, t.URL)
 	}
@@ -150,7 +150,7 @@ func (s *Store) Disconnect(id string) error {
 	s.persist()
 	s.mu.Unlock()
 
-	vlog.Info("target disconnected (saved)", "id", id, "url", t.URL)
+	logger.Info("target disconnected (saved)", "id", id, "url", t.URL)
 	if s.OnDisconnect != nil {
 		s.OnDisconnect(id)
 	}
@@ -190,7 +190,7 @@ func (s *Store) Reconnect(id string) (*Target, error) {
 	s.persist()
 	s.mu.Unlock()
 
-	vlog.Info("target reconnected", "id", id, "url", url)
+	logger.Info("target reconnected", "id", id, "url", url)
 	if s.OnConnect != nil {
 		s.OnConnect(id, url)
 	}
@@ -210,7 +210,7 @@ func (s *Store) Remove(id string) error {
 	delete(s.saved, id)
 	s.persist()
 
-	vlog.Info("target removed", "id", id)
+	logger.Info("target removed", "id", id)
 	return nil
 }
 
@@ -266,14 +266,14 @@ func (s *Store) loadFromFile() {
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			vlog.Warn("failed to read connections file", "path", s.filePath, "error", err)
+			logger.Warn("failed to read connections file", "path", s.filePath, "error", err)
 		}
 		return
 	}
 
 	var targets []savedTarget
 	if err := json.Unmarshal(data, &targets); err != nil {
-		vlog.Warn("malformed connections file, starting empty", "path", s.filePath, "error", err)
+		logger.Warn("malformed connections file, starting empty", "path", s.filePath, "error", err)
 		return
 	}
 
@@ -288,7 +288,7 @@ func (s *Store) loadFromFile() {
 		}
 	}
 
-	vlog.Info("loaded saved connections", "count", len(targets))
+	logger.Info("loaded saved connections", "count", len(targets))
 }
 
 // persist writes all known targets (active + saved) to the JSON file atomically.
@@ -323,18 +323,18 @@ func (s *Store) persist() {
 
 	data, err := json.MarshalIndent(targets, "", "  ")
 	if err != nil {
-		vlog.Error("failed to marshal connections", "error", err)
+		logger.Error("failed to marshal connections", "error", err)
 		return
 	}
 
 	// Atomic write: write to temp file then rename
 	tmp := s.filePath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		vlog.Error("failed to write connections file", "error", err)
+		logger.Error("failed to write connections file", "error", err)
 		return
 	}
 	if err := os.Rename(tmp, s.filePath); err != nil {
-		vlog.Error("failed to rename connections file", "error", err)
+		logger.Error("failed to rename connections file", "error", err)
 	}
 }
 
@@ -372,12 +372,12 @@ func (s *Store) healthCheckLoop(ctx context.Context) {
 					t.LastCheck = &now
 					if err != nil {
 						if t.Status != StatusUnreachable {
-							vlog.Warn("target unreachable", "id", id, "url", url, "error", err)
+							logger.Warn("target unreachable", "id", id, "url", url, "error", err)
 						}
 						t.Status = StatusUnreachable
 					} else {
 						if t.Status != StatusConnected {
-							vlog.Info("target recovered", "id", id, "url", url)
+							logger.Info("target recovered", "id", id, "url", url)
 						}
 						t.Status = StatusConnected
 					}

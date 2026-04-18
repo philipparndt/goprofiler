@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
+	"github.com/philipparndt/go-logger"
 )
 
-const MaxPoints = 300
+const MaxPoints = 7200 // 2 hours at 1s intervals
 
 type DataPoint struct {
 	Timestamp     time.Time `json:"timestamp"`
@@ -86,7 +86,7 @@ func (s *Service) StartTarget(id, url string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.workers[id] = &targetWorker{cancel: cancel}
 
-	vlog.Info("memory monitor started", "id", id, "url", url)
+	logger.Info("memory monitor started", "id", id, "url", url)
 	go s.pollLoop(ctx, url)
 }
 
@@ -96,7 +96,7 @@ func (s *Service) StopTarget(id string) {
 	if w, ok := s.workers[id]; ok {
 		w.cancel()
 		delete(s.workers, id)
-		vlog.Info("memory monitor stopped", "id", id)
+		logger.Info("memory monitor stopped", "id", id)
 	}
 }
 

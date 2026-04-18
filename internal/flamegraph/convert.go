@@ -30,7 +30,9 @@ type Result struct {
 	TopFunctions []TopFunction `json:"topFunctions"`
 }
 
-func Convert(p *profile.Profile) *Result {
+// Convert converts a profile to a flame graph and top functions.
+// Optional overrideIdx overrides the value index selection (pass -1 or omit for auto).
+func Convert(p *profile.Profile, overrideIdx ...int) *Result {
 	if len(p.Sample) == 0 {
 		return &Result{
 			FlameGraph: &Node{Name: "root", Value: 0},
@@ -38,6 +40,9 @@ func Convert(p *profile.Profile) *Result {
 	}
 
 	valueIdx := bestValueIndex(p)
+	if len(overrideIdx) > 0 && overrideIdx[0] >= 0 && overrideIdx[0] < len(p.SampleType) {
+		valueIdx = overrideIdx[0]
+	}
 
 	// Build flame graph tree
 	root := &Node{Name: "root"}

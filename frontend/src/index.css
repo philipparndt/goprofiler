@@ -94,3 +94,5 @@ input, select, textarea {
 .d3-flame-graph .fade { opacity: 0.6 !important; }
 .d3-flame-graph .title { font-size: 16px; font-family: var(--font-sans); }
 .d3-flame-graph-tip { background-color: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 6px 10px; min-width: 200px; text-align: left; color: var(--text-primary); z-index: 10; font-size: 12px; font-family: var(--font-mono); }
+
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

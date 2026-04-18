@@ -108,8 +108,15 @@ export const api = {
     const qs = params.toString();
     return request<ProfileMeta[]>(`/profiles${qs ? `?${qs}` : ""}`);
   },
-  getProfile: (id: string, filter?: string) => request<ProfileDetail>(`/profiles/${id}${filter ? `?filter=${filter}` : ""}`),
+  getProfile: (id: string, opts?: { filter?: string; valueMode?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.filter) params.set("filter", opts.filter);
+    if (opts?.valueMode) params.set("valueMode", opts.valueMode);
+    const qs = params.toString();
+    return request<ProfileDetail>(`/profiles/${id}${qs ? `?${qs}` : ""}`);
+  },
   deleteProfile: (id: string) => request<void>(`/profiles/${id}`, { method: "DELETE" }),
+  refreshProfile: (id: string) => request<ProfileMeta>(`/profiles/${id}/refresh`, { method: "POST" }),
   updateLabel: (id: string, label: string) =>
     request<void>(`/profiles/${id}/label`, { method: "PUT", body: JSON.stringify({ label }) }),
   exportProfile: (id: string) => {

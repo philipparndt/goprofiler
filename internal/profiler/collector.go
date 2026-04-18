@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	vlog "github1.vg.vector.int/pes/vehub-vlog-go"
+	"github.com/philipparndt/go-logger"
 )
 
 type ProfileType string
@@ -49,7 +49,7 @@ func (c *Collector) CollectCPU(ctx context.Context, baseURL string, durationSec 
 	}
 
 	url := fmt.Sprintf("%s/debug/pprof/profile?seconds=%d", baseURL, durationSec)
-	vlog.Info("starting CPU profile", "url", baseURL, "duration", durationSec)
+	logger.Info("starting CPU profile", "url", baseURL, "duration", durationSec)
 
 	data, err := c.fetch(ctx, url)
 	if err != nil {
@@ -71,7 +71,7 @@ func (c *Collector) CollectTrace(ctx context.Context, baseURL string, durationSe
 	}
 
 	url := fmt.Sprintf("%s/debug/pprof/trace?seconds=%d", baseURL, durationSec)
-	vlog.Info("starting execution trace", "url", baseURL, "duration", durationSec)
+	logger.Info("starting execution trace", "url", baseURL, "duration", durationSec)
 
 	data, err := c.fetch(ctx, url)
 	if err != nil {
@@ -107,7 +107,7 @@ func (c *Collector) CollectSnapshot(ctx context.Context, baseURL string, ptype P
 	}
 
 	url := baseURL + endpoint
-	vlog.Info("collecting snapshot profile", "type", ptype, "url", baseURL)
+	logger.Info("collecting snapshot profile", "type", ptype, "url", baseURL)
 
 	data, err := c.fetch(ctx, url)
 	if err != nil {
