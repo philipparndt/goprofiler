@@ -23,23 +23,34 @@ const (
 	StatusSaved       Status = "saved"
 )
 
+type Language string
+
+const (
+	LangGo   Language = "go"
+	LangJava Language = "java"
+)
+
 type Target struct {
-	ID            string     `json:"id"`
-	URL           string     `json:"url"`
-	Status        Status     `json:"status"`
-	LastCheck     *time.Time `json:"lastCheck,omitempty"`
-	LastConnected *time.Time `json:"lastConnected,omitempty"`
-	Label         string     `json:"label,omitempty"`
-	SourceDir     string     `json:"sourceDir,omitempty"`
+	ID               string     `json:"id"`
+	URL              string     `json:"url"`
+	Status           Status     `json:"status"`
+	Language         Language   `json:"language"`
+	ConnectionMethod string     `json:"connectionMethod,omitempty"` // "pprof", "jmx", "async-profiler"
+	LastCheck        *time.Time `json:"lastCheck,omitempty"`
+	LastConnected    *time.Time `json:"lastConnected,omitempty"`
+	Label            string     `json:"label,omitempty"`
+	SourceDir        string     `json:"sourceDir,omitempty"`
 }
 
 // savedTarget is the JSON-persisted form.
 type savedTarget struct {
-	ID            string    `json:"id"`
-	URL           string    `json:"url"`
-	Label         string    `json:"label,omitempty"`
-	LastConnected time.Time `json:"lastConnected"`
-	SourceDir     string    `json:"sourceDir,omitempty"`
+	ID               string    `json:"id"`
+	URL              string    `json:"url"`
+	Language         Language  `json:"language"`
+	ConnectionMethod string    `json:"connectionMethod,omitempty"`
+	Label            string    `json:"label,omitempty"`
+	LastConnected    time.Time `json:"lastConnected"`
+	SourceDir        string    `json:"sourceDir,omitempty"`
 }
 
 type Store struct {
@@ -298,13 +309,19 @@ func (s *Store) loadFromFile() {
 
 	for _, st := range targets {
 		lc := st.LastConnected
+		lang := st.Language
+		if lang == "" {
+			lang = LangGo // default existing connections to Go
+		}
 		s.saved[st.ID] = &Target{
-			ID:            st.ID,
-			URL:           st.URL,
-			Label:         st.Label,
-			Status:        StatusSaved,
-			LastConnected: &lc,
-			SourceDir:     st.SourceDir,
+			ID:               st.ID,
+			URL:              st.URL,
+			Language:         lang,
+			ConnectionMethod: st.ConnectionMethod,
+			Label:            st.Label,
+			Status:           StatusSaved,
+			LastConnected:    &lc,
+			SourceDir:        st.SourceDir,
 		}
 	}
 
@@ -322,11 +339,13 @@ func (s *Store) persist() {
 			lc = *t.LastConnected
 		}
 		targets = append(targets, savedTarget{
-			ID:            t.ID,
-			URL:           t.URL,
-			Label:         t.Label,
-			LastConnected: lc,
-			SourceDir:     t.SourceDir,
+			ID:               t.ID,
+			URL:              t.URL,
+			Language:         t.Language,
+			ConnectionMethod: t.ConnectionMethod,
+			Label:            t.Label,
+			LastConnected:    lc,
+			SourceDir:        t.SourceDir,
 		})
 	}
 	for _, t := range s.saved {
@@ -335,11 +354,13 @@ func (s *Store) persist() {
 			lc = *t.LastConnected
 		}
 		targets = append(targets, savedTarget{
-			ID:            t.ID,
-			URL:           t.URL,
-			Label:         t.Label,
-			LastConnected: lc,
-			SourceDir:     t.SourceDir,
+			ID:               t.ID,
+			URL:              t.URL,
+			Language:         t.Language,
+			ConnectionMethod: t.ConnectionMethod,
+			Label:            t.Label,
+			LastConnected:    lc,
+			SourceDir:        t.SourceDir,
 		})
 	}
 
