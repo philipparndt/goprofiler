@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-backend dev dev-frontend dev-backend build-desktop dev-desktop run run-desktop clean help
+.PHONY: all build build-frontend build-backend dev dev-frontend dev-backend build-desktop dev-desktop run run-desktop run-java-sample clean help
 
 all: build
 
@@ -16,6 +16,9 @@ help:
 	@echo "  build-desktop   Build native desktop app"
 	@echo "  dev-desktop     Run Wails dev server with hot-reload"
 	@echo "  run-desktop     Build and run the desktop app"
+	@echo ""
+	@echo "Java sample:"
+	@echo "  run-java-sample Run the Java sample app for profiling"
 	@echo ""
 	@echo "Other:"
 	@echo "  clean           Remove all build artifacts"
@@ -58,6 +61,14 @@ run: build
 
 run-desktop: build-desktop
 	open build/bin/GoProfiler.app
+
+# Java sample app
+run-java-sample:
+	cd examples/java-sample && javac SampleApp.java && java \
+		-Dcom.sun.management.jmxremote.port=9999 \
+		-Dcom.sun.management.jmxremote.authenticate=false \
+		-Dcom.sun.management.jmxremote.ssl=false \
+		SampleApp
 
 clean:
 	rm -rf bin/

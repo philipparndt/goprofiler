@@ -98,3 +98,4 @@ out/
 bin
 logo.afdesign~lock~
 *.afdesign~lock~
+*.class

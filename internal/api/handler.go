@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"github.com/philipparndt/goprofiler/internal/connection"
+	"github.com/philipparndt/goprofiler/internal/k8s"
 	"github.com/philipparndt/goprofiler/internal/expvar"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
 	"github.com/philipparndt/goprofiler/internal/traceparser"
@@ -36,6 +38,7 @@ type Handler struct {
 	collector   *profiler.Collector
 	monitor     *monitor.Service
 	cpuMonitor  *monitor.CpuService
+	k8sConfig   *K8sConfig
 
 	mu              sync.Mutex
 	activeCancel    map[string]context.CancelFunc
@@ -54,6 +57,10 @@ func NewHandler(connections *connection.Store, storage *storage.Store, monitorSv
 		activeRecording: make(map[string]*recordingState),
 		traceCache:      make(map[string]*traceparser.TraceData),
 	}
+}
+
+func (h *Handler) SetK8sConfig(cfg *K8sConfig) {
+	h.k8sConfig = cfg
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -94,6 +101,13 @@ func (h *Handler) Routes() chi.Router {
 	})
 
 	r.Get("/tags", h.listTags)
+
+	r.Route("/k8s", func(r chi.Router) {
+		r.Get("/contexts", h.listK8sContexts)
+		r.Get("/namespaces", h.listK8sNamespaces)
+		r.Get("/pods", h.listK8sPods)
+		r.Post("/connect", h.connectK8sPod)
+	})
 
 	return r
 }
@@ -214,6 +228,14 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	// Java targets cannot be profiled via pprof
+	if target.Language == connection.LangJava {
+		writeError(w, http.StatusBadRequest,
+			"Java profiling is not yet available for remote JMX targets. "+
+				"Use the desktop app with 'Local Java' connection, or capture a JFR recording externally.")
 		return
 	}
 
@@ -946,4 +968,100 @@ func (h *Handler) diffProfiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// --- Kubernetes handlers ---
+
+type K8sConfig struct {
+	KubeconfigPath string
+	PortForwardMgr *k8s.PortForwardManager
+}
+
+func (h *Handler) listK8sContexts(w http.ResponseWriter, r *http.Request) {
+	kubeconfigPath := ""
+	if h.k8sConfig != nil {
+		kubeconfigPath = h.k8sConfig.KubeconfigPath
+	}
+	contexts, err := k8s.ListContexts(kubeconfigPath)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, contexts)
+}
+
+func (h *Handler) listK8sNamespaces(w http.ResponseWriter, r *http.Request) {
+	ctxName := r.URL.Query().Get("context")
+	kubeconfigPath := ""
+	if h.k8sConfig != nil {
+		kubeconfigPath = h.k8sConfig.KubeconfigPath
+	}
+	namespaces, err := k8s.ListNamespaces(kubeconfigPath, ctxName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, namespaces)
+}
+
+func (h *Handler) listK8sPods(w http.ResponseWriter, r *http.Request) {
+	ctxName := r.URL.Query().Get("context")
+	ns := r.URL.Query().Get("namespace")
+	search := r.URL.Query().Get("search")
+	kubeconfigPath := ""
+	if h.k8sConfig != nil {
+		kubeconfigPath = h.k8sConfig.KubeconfigPath
+	}
+	pods, err := k8s.ListPods(kubeconfigPath, ctxName, ns, search)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, pods)
+}
+
+func (h *Handler) connectK8sPod(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Context   string `json:"context"`
+		Namespace string `json:"namespace"`
+		Pod       string `json:"pod"`
+		Port      int    `json:"port"`
+		Language  string `json:"language"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if h.k8sConfig == nil || h.k8sConfig.PortForwardMgr == nil {
+		writeError(w, http.StatusInternalServerError, "K8s port-forward manager not configured")
+		return
+	}
+
+	targetID := uuid.New().String()
+	localPort, err := h.k8sConfig.PortForwardMgr.Start(req.Context, req.Namespace, req.Pod, req.Port, targetID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "port-forward: "+err.Error())
+		return
+	}
+
+	var target *connection.Target
+	if req.Language == "java" {
+		url := fmt.Sprintf("localhost:%d", localPort)
+		target, err = h.connections.ConnectJava(url, "jmx")
+	} else {
+		url := fmt.Sprintf("http://localhost:%d", localPort)
+		target, err = h.connections.Connect(url)
+	}
+	if err != nil {
+		h.k8sConfig.PortForwardMgr.Stop(targetID)
+		writeError(w, http.StatusBadGateway, "connect: "+err.Error())
+		return
+	}
+
+	h.k8sConfig.PortForwardMgr.Reassign(targetID, target.ID)
+	h.connections.SetK8sInfo(target.ID, req.Context, req.Namespace, req.Pod, req.Port)
+	h.connections.SetLabel(target.ID, req.Pod)
+
+	writeJSON(w, http.StatusOK, target)
 }

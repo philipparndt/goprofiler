@@ -177,6 +177,20 @@ a.btn-primary:hover {
   color: var(--text-muted);
 }
 
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 28px;
+  cursor: pointer;
+}
+
+select.input option {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -219,6 +233,10 @@ a.btn-primary:hover {
 .status-dot.connected {
   background: var(--success);
   box-shadow: 0 0 6px var(--success);
+}
+
+.status-dot.saved {
+  background: var(--text-muted, #6b7280);
 }
 
 .status-dot.unreachable {

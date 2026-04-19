@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"github.com/philipparndt/goprofiler/internal/api"
 	"github.com/philipparndt/goprofiler/internal/connection"
 	fe "github.com/philipparndt/goprofiler/internal/frontend"
+	"github.com/philipparndt/goprofiler/internal/java"
+	"github.com/philipparndt/goprofiler/internal/k8s"
 	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/storage"
 )
@@ -67,11 +70,24 @@ func main() {
 		monitorSvc.StopTarget(id)
 		cpuMonitorSvc.StopTarget(id)
 	}
+	connStore.ValidateJava = func(url string) error {
+		host, port, err := java.ParseJMXAddress(url)
+		if err != nil {
+			return err
+		}
+		return java.ValidateConnection(host, port)
+	}
+
+	portFwdMgr := k8s.NewPortForwardManager()
+	defer portFwdMgr.StopAll()
 
 	handler := api.NewHandler(connStore, store, monitorSvc, cpuMonitorSvc)
+	handler.SetK8sConfig(&api.K8sConfig{
+		PortForwardMgr: portFwdMgr,
+	})
 
 	r := chi.NewRouter()
-	r.Use(loggerchi.Logger())
+	r.Use(loggerchi.LoggerWithLevel(slog.LevelDebug))
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:*"},

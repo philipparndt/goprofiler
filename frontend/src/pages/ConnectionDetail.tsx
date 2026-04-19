@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { api, isWails } from "../api";
-import type { Target, ProfileMeta, StartProfileRequest, ProcessInfo, AvailableProfile } from "../api";
+import type { Target, ProfileMeta, StartProfileRequest, ProcessInfo, AvailableProfile, Language } from "../api";
 
 function parseTags(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -15,11 +15,12 @@ function parseTags(raw: string | undefined): string[] {
 import ProfileTypeBadge from "../components/ProfileTypeBadge";
 import { refreshSidebar, onConnectionChange } from "../App";
 import MemoryChart from "../components/MemoryChart";
+import JavaMonitorCharts from "../components/JavaMonitorCharts";
 import GoroutineChart from "../components/GoroutineChart";
 import CpuChart from "../components/CpuChart";
 import ExpvarMetrics from "../components/ExpvarMetrics";
 
-type ProfileType = "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots";
+type ProfileType = "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots" | "lock";
 
 export default function ConnectionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -78,12 +79,12 @@ export default function ConnectionDetail() {
     });
   }, [id]);
   useEffect(() => { if (target) loadProfiles(target.url); }, [typeFilter, tagFilter]);
-  // Check CPU monitoring status when monitor tab is shown
+  // Check CPU monitoring status when monitor tab is shown (Go targets only)
   useEffect(() => {
-    if (tab === "monitor" && id) {
+    if (tab === "monitor" && id && (target?.language === "go" || !target?.language)) {
       api.getCpuHistory(id).then((res) => setCpuEnabled(res.active)).catch(() => {});
     }
-  }, [tab, id]);
+  }, [tab, id, target?.language]);
 
   const disconnect = async () => {
     if (!id) return;
@@ -169,11 +170,12 @@ export default function ConnectionDetail() {
       </div>
 
       {/* Profiling tab */}
-      {(tab === "profiling" || target.status !== "connected") && (
+      {(tab === "profiling" || (target.status !== "connected" && tab !== "info")) && (
         <>
           {target.status === "connected" && (
             <ProfilingControls
               targetId={target.id}
+              language={target.language || "go"}
               onComplete={(profileId) => {
                 if (target) loadProfiles(target.url);
                 if (profileId) navigate(`/profiles/${profileId}`);
@@ -387,6 +389,14 @@ export default function ConnectionDetail() {
               </button>
             ))}
           </div>
+
+          {/* Java monitoring */}
+          {target.language === "java" && (
+            <JavaMonitorCharts targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
+          )}
+
+          {/* Go monitoring */}
+          {(target.language === "go" || !target.language) && (<>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Memory</h2>
             <MemoryChart targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
@@ -427,11 +437,41 @@ export default function ConnectionDetail() {
               <CpuChart targetId={target.id} active={tab === "monitor" && cpuEnabled} windowMs={monitorWindow * 60 * 1000} />
             )}
           </div>
+          </>)}
         </div>
       )}
 
       {tab === "info" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+        {/* Connection management */}
+        <div className="card">
+          <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>Connection</h3>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {target.status === "connected" && (
+              <button className="btn btn-secondary btn-sm" onClick={disconnect}>Disconnect</button>
+            )}
+            {target.status === "saved" && (
+              <button className="btn btn-primary btn-sm" onClick={reconnect}>Reconnect</button>
+            )}
+            {target.status === "unreachable" && (
+              <>
+                <button className="btn btn-primary btn-sm" onClick={reconnect}>Reconnect</button>
+                <button className="btn btn-secondary btn-sm" onClick={disconnect}>Disconnect</button>
+              </>
+            )}
+            {target.status === "saved" && (
+              <button className="btn btn-danger btn-sm" onClick={() => {
+                if (confirm("Remove this connection permanently?")) remove();
+              }}>Delete</button>
+            )}
+          </div>
+          <div style={{ marginTop: 12, display: "flex", gap: 16, fontSize: 13 }}>
+            <span style={{ color: "var(--text-muted)" }}>Status: <strong style={{ color: target.status === "connected" ? "var(--success)" : target.status === "unreachable" ? "var(--danger)" : "var(--text-muted)" }}>{target.status}</strong></span>
+            <span style={{ color: "var(--text-muted)" }}>URL: <span className="mono">{target.url}</span></span>
+          </div>
+        </div>
+
         {isWails() && (
           <div className="card">
             <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Source Directory</h3>
@@ -511,9 +551,9 @@ export default function ConnectionDetail() {
   );
 }
 
-const WELL_KNOWN = new Set(["cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate"]);
+const WELL_KNOWN = new Set(["cpu", "trace", "heap", "goroutine", "block", "mutex", "allocs", "threadcreate", "lock"]);
 
-function ProfilingControls({ targetId, onComplete }: { targetId: string; onComplete: (profileId?: string) => void }) {
+function ProfilingControls({ targetId, language, onComplete }: { targetId: string; language: Language; onComplete: (profileId?: string) => void }) {
   const [profileType, setProfileType] = useState<ProfileType>("cpu");
   const [duration, setDuration] = useState(30);
   const [profiling, setProfiling] = useState(false);
@@ -524,14 +564,24 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
   const [available, setAvailable] = useState<AvailableProfile[] | null>(null);
 
   useEffect(() => {
-    api.getAvailableProfiles(targetId).then(setAvailable).catch(() => setAvailable(null));
-  }, [targetId]);
+    if (language === "java") {
+      // Java targets don't have pprof — provide Java profile types directly
+      setAvailable([
+        { name: "cpu", kind: "recording" },
+        { name: "heap", kind: "snapshot" },
+        { name: "allocs", kind: "recording" },
+        { name: "lock", kind: "recording" },
+      ]);
+    } else {
+      api.getAvailableProfiles(targetId).then(setAvailable).catch(() => setAvailable(null));
+    }
+  }, [targetId, language]);
 
   const recordings = available ? available.filter((p) => p.kind === "recording") : [{ name: "cpu", kind: "recording" as const }, { name: "trace", kind: "recording" as const }];
   const snapshots = available ? available.filter((p) => p.kind === "snapshot" && WELL_KNOWN.has(p.name)) : [{ name: "heap", kind: "snapshot" as const }, { name: "goroutine", kind: "snapshot" as const }, { name: "block", kind: "snapshot" as const }, { name: "mutex", kind: "snapshot" as const }, { name: "allocs", kind: "snapshot" as const }, { name: "threadcreate", kind: "snapshot" as const }];
   const custom = available ? available.filter((p) => p.kind === "snapshot" && !WELL_KNOWN.has(p.name)) : [];
 
-  const isRecording = profileType === "cpu" || profileType === "trace";
+  const isRecording = recordings.some((r) => r.name === profileType);
 
   const cleanup = () => {
     setProfiling(false);
@@ -579,16 +629,35 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
         setError(e.message || "Failed to start recording");
       }
     } else {
-      // Synchronous snapshot
+      // Snapshot — may be sync (Go) or async (Java JFR)
       try {
         const req: StartProfileRequest = { type: profileType };
         const result = await api.startProfile(targetId, req);
-        cleanup();
-        // For all_snapshots, result is an array -- just refresh list
-        if (profileType === "all_snapshots") {
-          onComplete();
+
+        if ((result as any)?.status === "recording") {
+          // Java JFR snapshot — poll for completion like a recording
+          pollRef.current = setInterval(async () => {
+            try {
+              const status = await api.getRecordingStatus(targetId);
+              if (status.status === "done") {
+                cleanup();
+                onComplete(status.profileId);
+              } else if (status.status === "failed") {
+                cleanup();
+                setError(status.error || "Capture failed");
+              } else if (status.status === "idle") {
+                cleanup();
+              }
+            } catch {}
+          }, 500);
         } else {
-          onComplete((result as any)?.id);
+          cleanup();
+          if (profileType === "all_snapshots") {
+            onComplete();
+          } else {
+            const profileId = (result as any)?.id || (result as any)?.profile?.id;
+            onComplete(profileId);
+          }
         }
       } catch (e: any) {
         cleanup();
@@ -706,8 +775,16 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
       )}
 
       {profiling && !isRecording && (
-        <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
-          Capturing {profileType === "all_snapshots" ? "all snapshots" : `${profileType} snapshot`}...
+        <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            display: "inline-block", width: 14, height: 14,
+            boxSizing: "border-box",
+            border: "2px solid var(--border)",
+            borderTopColor: "var(--accent, #8b5cf6)",
+            borderRadius: "50%",
+            animation: "spin 0.8s linear infinite",
+          }} />
+          Capturing {profileType === "all_snapshots" ? "all snapshots" : `${profileType} profile`}...
         </div>
       )}
 
@@ -719,6 +796,7 @@ function ProfilingControls({ targetId, onComplete }: { targetId: string; onCompl
 const PROFILE_LABELS: Record<string, string> = {
   cpu: "CPU", trace: "Trace", heap: "Heap", goroutine: "Goroutine",
   block: "Block", mutex: "Mutex", allocs: "Allocs", threadcreate: "Threads",
+  lock: "Lock",
 };
 function profileLabel(name: string): string {
   return PROFILE_LABELS[name] || name.charAt(0).toUpperCase() + name.slice(1);

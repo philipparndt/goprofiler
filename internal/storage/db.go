@@ -17,6 +17,7 @@ type ProfileRecord struct {
 	ID          string    `json:"id"`
 	TargetURL   string    `json:"targetURL"`
 	Type        string    `json:"type"`
+	Format      string    `json:"format,omitempty"` // "pprof", "jfr", "async-profiler" — defaults to "pprof" for Go
 	Timestamp   time.Time `json:"timestamp"`
 	DurationSec int       `json:"durationSec,omitempty"`
 	Size        int64     `json:"size"`
@@ -79,8 +80,9 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	// Migration: add tags column if missing (existing databases)
+	// Migrations: add columns if missing (existing databases)
 	s.db.Exec(`ALTER TABLE profiles ADD COLUMN tags TEXT DEFAULT '[]'`)
+	s.db.Exec(`ALTER TABLE profiles ADD COLUMN format TEXT DEFAULT ''`)
 	return err
 }
 
@@ -101,9 +103,9 @@ func (s *Store) SaveProfile(rec *ProfileRecord, data []byte) error {
 		rec.Tags = "[]"
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO profiles (id, target_url, type, timestamp, duration_sec, size, label, file_path, tags)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.TargetURL, rec.Type, rec.Timestamp, rec.DurationSec, rec.Size, rec.Label, rec.FilePath, rec.Tags,
+		`INSERT INTO profiles (id, target_url, type, format, timestamp, duration_sec, size, label, file_path, tags)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.ID, rec.TargetURL, rec.Type, rec.Format, rec.Timestamp, rec.DurationSec, rec.Size, rec.Label, rec.FilePath, rec.Tags,
 	)
 	if err != nil {
 		os.Remove(filePath)
@@ -114,7 +116,7 @@ func (s *Store) SaveProfile(rec *ProfileRecord, data []byte) error {
 }
 
 func (s *Store) ListProfiles(profileType, targetURL, tag string) ([]ProfileRecord, error) {
-	query := `SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path, tags FROM profiles`
+	query := `SELECT id, target_url, type, COALESCE(format,'') as format, timestamp, duration_sec, size, label, file_path, tags FROM profiles`
 	args := []any{}
 	conditions := []string{}
 
@@ -147,7 +149,7 @@ func (s *Store) ListProfiles(profileType, targetURL, tag string) ([]ProfileRecor
 	var profiles []ProfileRecord
 	for rows.Next() {
 		var p ProfileRecord
-		if err := rows.Scan(&p.ID, &p.TargetURL, &p.Type, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath, &p.Tags); err != nil {
+		if err := rows.Scan(&p.ID, &p.TargetURL, &p.Type, &p.Format, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath, &p.Tags); err != nil {
 			return nil, err
 		}
 		profiles = append(profiles, p)
@@ -177,9 +179,9 @@ func (s *Store) ProfileCountsByTarget() (map[string]int, error) {
 func (s *Store) GetProfile(id string) (*ProfileRecord, error) {
 	var p ProfileRecord
 	err := s.db.QueryRow(
-		`SELECT id, target_url, type, timestamp, duration_sec, size, label, file_path, tags FROM profiles WHERE id = ?`,
+		`SELECT id, target_url, type, COALESCE(format,'') as format, timestamp, duration_sec, size, label, file_path, tags FROM profiles WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.TargetURL, &p.Type, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath, &p.Tags)
+	).Scan(&p.ID, &p.TargetURL, &p.Type, &p.Format, &p.Timestamp, &p.DurationSec, &p.Size, &p.Label, &p.FilePath, &p.Tags)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("profile not found: %s", id)
 	}

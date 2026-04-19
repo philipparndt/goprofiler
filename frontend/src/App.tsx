@@ -8,6 +8,7 @@ import DiffViewer from "./pages/DiffViewer";
 import Setup from "./pages/Setup";
 import Settings from "./pages/Settings";
 import { api } from "./api";
+import LanguageBadge from "./components/LanguageBadge";
 import type { Target } from "./api";
 import "./App.css";
 
@@ -67,7 +68,7 @@ function Sidebar() {
     };
   }, [load]);
 
-  const allTargets = [...activeTargets, ...savedTargets];
+  const allTargets = [...activeTargets, ...savedTargets].sort((a, b) => a.url.localeCompare(b.url));
 
   const handleReconnect = async (id: string) => {
     try {
@@ -110,7 +111,8 @@ function Sidebar() {
 
               return (
                 <div key={t.id} style={{ marginBottom: 2 }}>
-                  <div
+                  <NavLink
+                    to={`${basePath}/info`}
                     style={{
                       padding: "6px 12px 6px 20px",
                       fontSize: 12,
@@ -123,13 +125,16 @@ function Sidebar() {
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
+                      textDecoration: "none",
+                      cursor: "pointer",
                     }}
                   >
                     <span className={`status-dot ${t.status}`} style={{ flexShrink: 0 }} />
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{displayUrl}</span>
+                    <LanguageBadge language={t.language || "go"} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{t.label || displayUrl}</span>
                     {!isConnected && (
                       <button
-                        onClick={() => handleReconnect(t.id)}
+                        onClick={(e) => { e.preventDefault(); handleReconnect(t.id); }}
                         title="Reconnect"
                         style={{
                           background: "none",
@@ -146,7 +151,7 @@ function Sidebar() {
                         </svg>
                       </button>
                     )}
-                  </div>
+                  </NavLink>
                   {isConnected && (
                     <>
                       <NavLink
@@ -166,15 +171,6 @@ function Sidebar() {
                           <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
                         </svg>
                         Monitor
-                      </NavLink>
-                      <NavLink
-                        to={`${basePath}/info`}
-                        className={({ isActive }) => `nav-item nav-sub-item ${isActive ? "active" : ""}`}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-                        </svg>
-                        Info
                       </NavLink>
                       <NavLink
                         to={`${basePath}/expvars`}

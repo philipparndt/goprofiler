@@ -40,6 +40,12 @@ type Target struct {
 	LastConnected    *time.Time `json:"lastConnected,omitempty"`
 	Label            string     `json:"label,omitempty"`
 	SourceDir        string     `json:"sourceDir,omitempty"`
+	LocalPid         int        `json:"localPid,omitempty"`
+	JavaMainClass    string     `json:"javaMainClass,omitempty"`
+	K8sContext       string     `json:"k8sContext,omitempty"`
+	K8sNamespace     string     `json:"k8sNamespace,omitempty"`
+	K8sPod           string     `json:"k8sPod,omitempty"`
+	K8sPort          int        `json:"k8sPort,omitempty"`
 }
 
 // savedTarget is the JSON-persisted form.
@@ -51,6 +57,12 @@ type savedTarget struct {
 	Label            string    `json:"label,omitempty"`
 	LastConnected    time.Time `json:"lastConnected"`
 	SourceDir        string    `json:"sourceDir,omitempty"`
+	LocalPid         int       `json:"localPid,omitempty"`
+	JavaMainClass    string    `json:"javaMainClass,omitempty"`
+	K8sContext       string    `json:"k8sContext,omitempty"`
+	K8sNamespace     string    `json:"k8sNamespace,omitempty"`
+	K8sPod           string    `json:"k8sPod,omitempty"`
+	K8sPort          int       `json:"k8sPort,omitempty"`
 }
 
 type Store struct {
@@ -63,6 +75,9 @@ type Store struct {
 
 	OnConnect    func(id, url string) // called after a target connects
 	OnDisconnect func(id string)      // called after a target disconnects
+
+	// ValidateJava is called to health-check Java targets. Set by the app layer.
+	ValidateJava func(url string) error
 }
 
 func NewStore(configDir string) (*Store, error) {
@@ -130,17 +145,74 @@ func (s *Store) Connect(rawURL string) (*Target, error) {
 	}
 
 	t := &Target{
-		ID:            uuid.New().String(),
-		URL:           rawURL,
-		Status:        StatusConnected,
-		LastCheck:     &now,
-		LastConnected: &now,
+		ID:               uuid.New().String(),
+		URL:              rawURL,
+		Language:         LangGo,
+		ConnectionMethod: "pprof",
+		Status:           StatusConnected,
+		LastCheck:        &now,
+		LastConnected:    &now,
 	}
 	s.active[t.ID] = t
 	s.persist()
 	s.mu.Unlock()
 
 	logger.Info("target connected", "id", t.ID, "url", t.URL)
+	if s.OnConnect != nil {
+		s.OnConnect(t.ID, t.URL)
+	}
+	return t, nil
+}
+
+// ConnectJava adds a Java target to the active set.
+func (s *Store) ConnectJava(url string, method string) (*Target, error) {
+	url = strings.TrimRight(url, "/")
+	now := time.Now()
+
+	s.mu.Lock()
+
+	// Check if this URL is already saved — reuse its ID
+	for id, t := range s.saved {
+		if t.URL == url && t.Language == LangJava {
+			t.Status = StatusConnected
+			t.LastCheck = &now
+			t.LastConnected = &now
+			t.ConnectionMethod = method
+			s.active[id] = t
+			delete(s.saved, id)
+			s.persist()
+			s.mu.Unlock()
+			logger.Info("java target reconnected", "id", id, "url", url)
+			if s.OnConnect != nil {
+				s.OnConnect(id, url)
+			}
+			return t, nil
+		}
+	}
+
+	// Check if already active
+	for _, t := range s.active {
+		if t.URL == url && t.Language == LangJava {
+			copy := *t
+			s.mu.Unlock()
+			return &copy, nil
+		}
+	}
+
+	t := &Target{
+		ID:               uuid.New().String(),
+		URL:              url,
+		Language:         LangJava,
+		ConnectionMethod: method,
+		Status:           StatusConnected,
+		LastCheck:        &now,
+		LastConnected:    &now,
+	}
+	s.active[t.ID] = t
+	s.persist()
+	s.mu.Unlock()
+
+	logger.Info("java target connected", "id", t.ID, "url", t.URL, "method", method)
 	if s.OnConnect != nil {
 		s.OnConnect(t.ID, t.URL)
 	}
@@ -179,9 +251,16 @@ func (s *Store) Reconnect(id string) (*Target, error) {
 		return nil, fmt.Errorf("saved target not found: %s", id)
 	}
 	url := t.URL
+	lang := t.Language
 	s.mu.RUnlock()
 
-	if err := s.validatePprof(url); err != nil {
+	var err error
+	if lang == LangJava && s.ValidateJava != nil {
+		err = s.ValidateJava(url)
+	} else {
+		err = s.validatePprof(url)
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -225,6 +304,67 @@ func (s *Store) Remove(id string) error {
 
 	logger.Info("target removed", "id", id)
 	return nil
+}
+
+// IsK8s returns whether the target was connected via Kubernetes.
+func (t *Target) IsK8s() bool {
+	return t.K8sPod != ""
+}
+
+// GetSaved returns a saved target by ID.
+func (s *Store) GetSaved(id string) (*Target, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.saved[id]
+	if !ok {
+		return nil, false
+	}
+	copy := *t
+	return &copy, true
+}
+
+func (s *Store) SetLabel(id, label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.active[id]; ok {
+		t.Label = label
+		s.persist()
+	}
+}
+
+func (s *Store) UpdateURL(id, newURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.saved[id]; ok {
+		t.URL = newURL
+		s.persist()
+	}
+	if t, ok := s.active[id]; ok {
+		t.URL = newURL
+		s.persist()
+	}
+}
+
+func (s *Store) SetK8sInfo(id, k8sContext, namespace, pod string, port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.active[id]; ok {
+		t.K8sContext = k8sContext
+		t.K8sNamespace = namespace
+		t.K8sPod = pod
+		t.K8sPort = port
+		s.persist()
+	}
+}
+
+func (s *Store) SetLocalPid(id string, pid int, mainClass string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.active[id]; ok {
+		t.LocalPid = pid
+		t.JavaMainClass = mainClass
+		s.persist()
+	}
 }
 
 func (s *Store) SetSourceDir(id, dir string) error {
@@ -322,6 +462,12 @@ func (s *Store) loadFromFile() {
 			Status:           StatusSaved,
 			LastConnected:    &lc,
 			SourceDir:        st.SourceDir,
+			LocalPid:         st.LocalPid,
+			JavaMainClass:    st.JavaMainClass,
+			K8sContext:       st.K8sContext,
+			K8sNamespace:     st.K8sNamespace,
+			K8sPod:           st.K8sPod,
+			K8sPort:          st.K8sPort,
 		}
 	}
 
@@ -346,6 +492,12 @@ func (s *Store) persist() {
 			Label:            t.Label,
 			LastConnected:    lc,
 			SourceDir:        t.SourceDir,
+			LocalPid:         t.LocalPid,
+			JavaMainClass:    t.JavaMainClass,
+			K8sContext:       t.K8sContext,
+			K8sNamespace:     t.K8sNamespace,
+			K8sPod:           t.K8sPod,
+			K8sPort:          t.K8sPort,
 		})
 	}
 	for _, t := range s.saved {
@@ -361,6 +513,12 @@ func (s *Store) persist() {
 			Label:            t.Label,
 			LastConnected:    lc,
 			SourceDir:        t.SourceDir,
+			LocalPid:         t.LocalPid,
+			JavaMainClass:    t.JavaMainClass,
+			K8sContext:       t.K8sContext,
+			K8sNamespace:     t.K8sNamespace,
+			K8sPod:           t.K8sPod,
+			K8sPort:          t.K8sPort,
 		})
 	}
 
@@ -405,9 +563,15 @@ func (s *Store) healthCheckLoop(ctx context.Context) {
 					continue
 				}
 				url := t.URL
+				lang := t.Language
 				s.mu.RUnlock()
 
-				err := s.validatePprof(url)
+				var err error
+				if lang == LangJava && s.ValidateJava != nil {
+					err = s.ValidateJava(url)
+				} else {
+					err = s.validatePprof(url)
+				}
 				now := time.Now()
 
 				s.mu.Lock()

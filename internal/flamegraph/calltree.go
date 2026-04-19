@@ -99,6 +99,44 @@ func BuildCallTree(p *profile.Profile, overrideIdx ...int) *CallTreeNode {
 	return root
 }
 
+// BuildCallTreeFromFlameGraph builds a call tree from a FlameNode tree.
+// Used for JFR and other non-pprof profiles.
+func BuildCallTreeFromFlameGraph(root *Node, formatFn func(int64) string) *CallTreeNode {
+	if root == nil {
+		return &CallTreeNode{Name: "root"}
+	}
+	total := root.Value
+	ct := convertFlameNode(root, total, formatFn)
+	return ct
+}
+
+func convertFlameNode(n *Node, total int64, formatFn func(int64) string) *CallTreeNode {
+	ct := &CallTreeNode{
+		Name:    n.Name,
+		Cum:     n.Value,
+		Calls:   n.Samples,
+	}
+	for _, c := range n.Children {
+		ct.Children = append(ct.Children, convertFlameNode(c, total, formatFn))
+	}
+	// Compute self
+	var childrenCum int64
+	for _, c := range ct.Children {
+		childrenCum += c.Cum
+	}
+	ct.Self = ct.Cum - childrenCum
+	if ct.Self < 0 {
+		ct.Self = 0
+	}
+	if total > 0 {
+		ct.SelfPct = float64(ct.Self) / float64(total) * 100
+		ct.CumPct = float64(ct.Cum) / float64(total) * 100
+	}
+	ct.SelfFmt = formatFn(ct.Self)
+	ct.CumFmt = formatFn(ct.Cum)
+	return ct
+}
+
 func computeSelf(node *CallTreeNode, total int64, st *profile.ValueType, allocSt *profile.ValueType) {
 	var childrenCum int64
 	var childrenAllocCum int64

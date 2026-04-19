@@ -18,6 +18,8 @@ import (
 
 	"github.com/philipparndt/goprofiler/internal/ai"
 	"github.com/philipparndt/goprofiler/internal/connection"
+	"github.com/philipparndt/goprofiler/internal/java"
+	"github.com/philipparndt/goprofiler/internal/k8s"
 	"github.com/philipparndt/goprofiler/internal/settings"
 	"github.com/philipparndt/goprofiler/internal/expvar"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
@@ -41,7 +43,8 @@ type App struct {
 	storage     *storage.Store
 	settings    *settings.Store
 	monitor     *monitor.Service
-	cpuMonitor  *monitor.CpuService
+	cpuMonitor    *monitor.CpuService
+	javaMonitor   *java.JavaMonitorService
 	collector   *profiler.Collector
 
 	mu              sync.Mutex
@@ -51,6 +54,7 @@ type App struct {
 
 	analysisCancel    context.CancelFunc
 	analysisSessionID string
+	portForwardMgr    *k8s.PortForwardManager
 }
 
 func NewApp() *App {
@@ -96,20 +100,51 @@ func (a *App) startup(ctx context.Context) {
 	cpuMonitorSvc := monitor.NewCpuService()
 	a.cpuMonitor = cpuMonitorSvc
 
+	javaMonitorSvc := java.NewJavaMonitorService()
+	a.javaMonitor = javaMonitorSvc
+
 	for _, t := range connStore.List() {
-		monitorSvc.StartTarget(t.ID, t.URL)
+		if t.Language == connection.LangJava {
+			javaMonitorSvc.StartTarget(t.ID, t.URL)
+		} else {
+			monitorSvc.StartTarget(t.ID, t.URL)
+		}
 	}
 
-	connStore.OnConnect = func(id, url string) { monitorSvc.StartTarget(id, url) }
+	connStore.OnConnect = func(id, url string) {
+		// Check language to start the right monitor
+		if t, ok := connStore.Get(id); ok && t.Language == connection.LangJava {
+			javaMonitorSvc.StartTarget(id, url)
+		} else {
+			monitorSvc.StartTarget(id, url)
+		}
+	}
 	connStore.OnDisconnect = func(id string) {
 		monitorSvc.StopTarget(id)
 		cpuMonitorSvc.StopTarget(id)
+		javaMonitorSvc.StopTarget(id)
+		if a.portForwardMgr != nil {
+			a.portForwardMgr.Stop(id)
+		}
+	}
+	connStore.ValidateJava = func(url string) error {
+		host, port, err := java.ParseJMXAddress(url)
+		if err != nil {
+			return err
+		}
+		return java.ValidateConnection(host, port)
 	}
 
 	logger.Info("GoProfiler desktop started")
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	if a.portForwardMgr != nil {
+		a.portForwardMgr.StopAll()
+	}
+	if a.javaMonitor != nil {
+		a.javaMonitor.Close()
+	}
 	if a.cpuMonitor != nil {
 		a.cpuMonitor.Close()
 	}
@@ -145,6 +180,18 @@ func (a *App) AddTarget(url string) (*connection.Target, error) {
 	return a.connections.Connect(url)
 }
 
+func (a *App) AddJavaTarget(address string) (*connection.Target, error) {
+	host, port, err := java.ParseJMXAddress(address)
+	if err != nil {
+		return nil, err
+	}
+	if err := java.ValidateConnection(host, port); err != nil {
+		return nil, err
+	}
+	jmxURL := fmt.Sprintf("%s:%d", host, port)
+	return a.connections.ConnectJava(jmxURL, "jmx")
+}
+
 func (a *App) RemoveTarget(id string) error {
 	return a.connections.Remove(id)
 }
@@ -170,6 +217,35 @@ func (a *App) ListSavedTargets() ([]TargetWithCount, error) {
 }
 
 func (a *App) ReconnectTarget(id string) (*connection.Target, error) {
+	// Check if this is a K8s target that needs a fresh port-forward
+	saved, ok := a.connections.GetSaved(id)
+	if ok && saved.IsK8s() {
+		return a.reconnectK8s(id, saved)
+	}
+	return a.connections.Reconnect(id)
+}
+
+func (a *App) reconnectK8s(id string, saved *connection.Target) (*connection.Target, error) {
+	if a.portForwardMgr == nil {
+		a.portForwardMgr = k8s.NewPortForwardManager()
+	}
+
+	// Stop any existing port-forward
+	a.portForwardMgr.Stop(id)
+
+	// Start a fresh port-forward
+	localPort, err := a.portForwardMgr.Start(saved.K8sContext, saved.K8sNamespace, saved.K8sPod, saved.K8sPort, id)
+	if err != nil {
+		return nil, fmt.Errorf("port-forward: %w", err)
+	}
+
+	// Update the saved target's URL (port-forward is already ready) to the new local port, then reconnect
+	newURL := fmt.Sprintf("http://localhost:%d", localPort)
+	if saved.Language == connection.LangJava {
+		newURL = fmt.Sprintf("localhost:%d", localPort)
+	}
+	a.connections.UpdateURL(id, newURL)
+
 	return a.connections.Reconnect(id)
 }
 
@@ -190,6 +266,11 @@ func (a *App) StartProfile(targetID, profileType string, durationSec int) (map[s
 	target, ok := a.connections.Get(targetID)
 	if !ok {
 		return nil, fmt.Errorf("target not found")
+	}
+
+	// Java targets use JFR profiling, not pprof
+	if target.Language == connection.LangJava {
+		return a.startJavaProfile(target, profileType, durationSec)
 	}
 
 	ptype := profiler.ProfileType(profileType)
@@ -355,6 +436,71 @@ func (a *App) GetProfile(id string, filter string, valueMode string) (map[string
 			"timestamp": rec.Timestamp, "durationSec": rec.DurationSec,
 			"size": rec.Size, "label": rec.Label, "tags": rec.Tags, "traceType": true,
 		}, nil
+	}
+
+	// Handle Java heap histogram format
+	if rec.Format == "java-heap-histogram" {
+		var hist java.HeapHistogram
+		if err := json.Unmarshal(data, &hist); err != nil {
+			return nil, fmt.Errorf("parse heap histogram: %w", err)
+		}
+
+		root := &flamegraph.Node{Name: "root", Value: hist.TotalBytes, Samples: hist.TotalInstances}
+		for _, c := range hist.Classes {
+			root.Children = append(root.Children, &flamegraph.Node{
+				Name: c.ClassName, Value: c.Bytes, Samples: c.Instances,
+			})
+		}
+
+		var topFuncs []flamegraph.TopFunction
+		for _, c := range hist.Classes {
+			topFuncs = append(topFuncs, flamegraph.TopFunction{
+				Name:    c.ClassName,
+				Flat:    java.FormatJFRValue(c.Bytes, java.JFRProfileAlloc),
+				FlatPct: float64(c.Bytes) / float64(max(hist.TotalBytes, 1)) * 100,
+				Cum:     java.FormatJFRValue(c.Bytes, java.JFRProfileAlloc),
+				CumPct:  float64(c.Bytes) / float64(max(hist.TotalBytes, 1)) * 100,
+			})
+		}
+
+		formatFn := func(v int64) string { return java.FormatJFRValue(v, java.JFRProfileAlloc) }
+		callTree := flamegraph.BuildCallTreeFromFlameGraph(root, formatFn)
+
+		return map[string]any{
+			"id": rec.ID, "targetURL": rec.TargetURL, "type": rec.Type,
+			"timestamp": rec.Timestamp, "durationSec": rec.DurationSec,
+			"size": rec.Size, "label": rec.Label, "tags": rec.Tags,
+			"format": rec.Format,
+			"flameGraph": root, "topFunctions": topFuncs, "callTree": callTree,
+		}, nil
+	}
+
+	// Handle JFR format
+	if rec.Format == "jfr" {
+		jfrType := java.JFRProfileCPU
+		switch rec.Type {
+		case "heap", "allocs":
+			jfrType = java.JFRProfileAlloc
+		case "lock", "mutex":
+			jfrType = java.JFRProfileLock
+		}
+		result, err := java.ParseJFR(data, jfrType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse JFR: %w", err)
+		}
+		formatFn := func(v int64) string {
+			return java.FormatJFRValue(v, jfrType)
+		}
+		callTree := flamegraph.BuildCallTreeFromFlameGraph(result.FlameGraph, formatFn)
+		resp := map[string]any{
+			"id": rec.ID, "targetURL": rec.TargetURL, "type": rec.Type,
+			"timestamp": rec.Timestamp, "durationSec": rec.DurationSec,
+			"size": rec.Size, "label": rec.Label, "tags": rec.Tags,
+			"format": "jfr",
+			"flameGraph": result.FlameGraph, "topFunctions": result.TopFunctions,
+			"callTree": callTree,
+		}
+		return resp, nil
 	}
 
 	prof, err := profile.ParseData(data)
@@ -597,6 +743,39 @@ func (a *App) DisableCpuMonitoring(targetID string) (map[string]string, error) {
 	return map[string]string{"status": "disabled"}, nil
 }
 
+func (a *App) GetJavaMonitorHistory(targetID, since string) (any, error) {
+	target, ok := a.connections.Get(targetID)
+	if !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+
+	var sinceTime time.Time
+	if since != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, since); err == nil {
+			sinceTime = ts
+		}
+	}
+
+	return a.javaMonitor.GetHistory(target.URL, sinceTime), nil
+}
+
+func (a *App) EnableJavaMonitoring(targetID string) (map[string]string, error) {
+	target, ok := a.connections.Get(targetID)
+	if !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+	a.javaMonitor.StartTarget(targetID, target.URL)
+	return map[string]string{"status": "enabled"}, nil
+}
+
+func (a *App) DisableJavaMonitoring(targetID string) (map[string]string, error) {
+	if _, ok := a.connections.Get(targetID); !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+	a.javaMonitor.StopTarget(targetID)
+	return map[string]string{"status": "disabled"}, nil
+}
+
 func (a *App) GetGoroutineGroups(targetID string, top int) (any, error) {
 	target, ok := a.connections.Get(targetID)
 	if !ok {
@@ -633,7 +812,7 @@ func (a *App) GetTraceData(profileID string) (*traceparser.TraceData, error) {
 	if err != nil {
 		return nil, err
 	}
-	if rec.Type != "trace" {
+	if rec.Type != "trace" && rec.Format != "jfr" {
 		return nil, fmt.Errorf("not a trace profile")
 	}
 
@@ -649,7 +828,12 @@ func (a *App) GetTraceData(profileID string) (*traceparser.TraceData, error) {
 		return nil, err
 	}
 
-	td, err := traceparser.ParseTrace(data)
+	var td *traceparser.TraceData
+	if rec.Format == "jfr" {
+		td, err = java.ParseJFRThreads(data)
+	} else {
+		td, err = traceparser.ParseTrace(data)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("parse trace: %w", err)
 	}
@@ -659,6 +843,137 @@ func (a *App) GetTraceData(profileID string) (*traceparser.TraceData, error) {
 	a.mu.Unlock()
 
 	return td, nil
+}
+
+// --- Java profiling ---
+
+func (a *App) DiscoverLocalJVMs() ([]java.LocalJVM, error) {
+	return java.DiscoverLocalJVMs()
+}
+
+func (a *App) ConnectLocalJVM(pid int) (*connection.Target, error) {
+	result, err := java.ConnectLocal(pid)
+	if err != nil {
+		return nil, fmt.Errorf("attach to JVM %d: %w", pid, err)
+	}
+
+	logger.Info("local JVM connected", "pid", result.PID, "mainClass", result.MainClass, "jmxPort", result.JMXPort, "url", result.URL)
+
+	// Set PID on java monitor BEFORE connecting (so OnConnect's monitor start can use it)
+	if a.javaMonitor != nil {
+		a.javaMonitor.SetPid(result.URL, result.PID)
+	}
+
+	// Create target via connection store
+	target, err := a.connections.ConnectJava(result.URL, "jmx")
+	if err != nil {
+		return nil, fmt.Errorf("create target: %w", err)
+	}
+
+	// Store PID and main class for lifecycle tracking
+	a.connections.SetLocalPid(target.ID, result.PID, result.MainClass)
+
+	t, ok := a.connections.Get(target.ID)
+	if !ok {
+		return target, nil
+	}
+	return t, nil
+}
+
+func (a *App) startJavaProfile(target *connection.Target, profileType string, durationSec int) (map[string]any, error) {
+	if target.LocalPid == 0 {
+		return nil, fmt.Errorf(
+			"Java profiling requires a local JVM connection. " +
+				"Use 'Local Java' in the connect dialog to discover and connect to local JVMs.",
+		)
+	}
+
+	pid := target.LocalPid
+	targetID := target.ID
+	targetURL := target.URL
+
+	// For Java "heap": use jcmd class histogram (live objects, instant)
+	// For Java "allocs": use JFR allocation events (total allocations over time)
+	if profileType == "heap" {
+		return a.startJavaHeapHistogram(target)
+	}
+
+	if durationSec <= 0 {
+		durationSec = 10
+	}
+
+	jfrType := java.JFRProfileCPU
+	switch profileType {
+	case "allocs":
+		jfrType = java.JFRProfileAlloc
+	case "lock", "mutex", "block":
+		jfrType = java.JFRProfileLock
+	}
+
+	// For snapshots, run in background and return immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	rs := &recordingState{
+		cancel: cancel,
+		done:   make(chan struct{}),
+		ptype:  profileType,
+	}
+
+	a.mu.Lock()
+	a.activeCancel[targetID] = cancel
+	a.activeRecording[targetID] = rs
+	a.mu.Unlock()
+
+	go func() {
+		defer close(rs.done)
+
+		settings := java.JFRSettingsForProfile(jfrType)
+		data, err := java.CollectJFRProfile(ctx, pid, durationSec, settings)
+		if err != nil {
+			rs.err = err
+			return
+		}
+
+		rec := &storage.ProfileRecord{
+			ID:          uuid.New().String(),
+			TargetURL:   targetURL,
+			Type:        profileType,
+			Format:      "jfr",
+			Timestamp:   time.Now(),
+			DurationSec: durationSec,
+		}
+		if err := a.storage.SaveProfile(rec, data); err != nil {
+			rs.err = err
+			return
+		}
+		rs.profileID = rec.ID
+	}()
+
+	return map[string]any{"status": "recording", "type": profileType}, nil
+}
+
+func (a *App) startJavaHeapHistogram(target *connection.Target) (map[string]any, error) {
+	hist, err := java.CaptureHeapHistogram(target.LocalPid)
+	if err != nil {
+		return nil, fmt.Errorf("heap histogram: %w", err)
+	}
+
+	rec := &storage.ProfileRecord{
+		ID:        uuid.New().String(),
+		TargetURL: target.URL,
+		Type:      "heap",
+		Format:    "java-heap-histogram",
+		Timestamp: time.Now(),
+	}
+
+	// Serialize histogram as JSON for storage
+	histJSON, _ := json.Marshal(hist)
+	if err := a.storage.SaveProfile(rec, histJSON); err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"profile": rec,
+	}, nil
 }
 
 // --- AI analysis bindings ---
@@ -708,6 +1023,7 @@ type AnalysisRequest struct {
 	ProfileType  string            `json:"profileType,omitempty"`
 	FunctionName string            `json:"functionName,omitempty"`
 	Functions       []ai.FunctionInfo `json:"functions,omitempty"`
+	Format          string            `json:"format,omitempty"` // "pprof", "jfr"
 	PermissionLevel string            `json:"permissionLevel,omitempty"` // "read-only", "edit-files", "full"
 }
 
@@ -735,17 +1051,37 @@ func (a *App) StartAnalysis(req AnalysisRequest) error {
 	// Cancel any existing analysis
 	a.CancelAnalysis()
 
-	// Build prompt
+	// Build prompt — use Java-specific prompts for JFR format
 	var prompt string
-	switch req.Mode {
-	case "explain":
-		prompt = ai.BuildExplainPrompt(req.Functions, sourceDir, req.ProfileType)
-	case "optimize":
-		prompt = ai.BuildOptimizePrompt(req.Functions, sourceDir, req.ProfileType)
-	case "explain-function":
-		prompt = ai.BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType)
-	default:
-		return fmt.Errorf("unknown analysis mode: %s", req.Mode)
+	if req.Format == "jfr" {
+		switch req.Mode {
+		case "explain":
+			switch req.ProfileType {
+			case "heap", "allocs":
+				prompt = ai.BuildJavaAllocExplainPrompt(req.Functions, sourceDir)
+			case "lock", "mutex":
+				prompt = ai.BuildJavaLockExplainPrompt(req.Functions, sourceDir)
+			default:
+				prompt = ai.BuildJavaCPUExplainPrompt(req.Functions, sourceDir)
+			}
+		case "optimize":
+			prompt = ai.BuildJavaCPUExplainPrompt(req.Functions, sourceDir) // reuse with optimize framing
+		case "explain-function":
+			prompt = ai.BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType)
+		default:
+			return fmt.Errorf("unknown analysis mode: %s", req.Mode)
+		}
+	} else {
+		switch req.Mode {
+		case "explain":
+			prompt = ai.BuildExplainPrompt(req.Functions, sourceDir, req.ProfileType)
+		case "optimize":
+			prompt = ai.BuildOptimizePrompt(req.Functions, sourceDir, req.ProfileType)
+		case "explain-function":
+			prompt = ai.BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType)
+		default:
+			return fmt.Errorf("unknown analysis mode: %s", req.Mode)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1002,6 +1338,66 @@ func findGoroutine(td *traceparser.TraceData, id uint64) *ai.GoroutineInfo {
 		}
 	}
 	return nil
+}
+
+// --- Kubernetes bindings ---
+
+func (a *App) ListK8sContexts() ([]k8s.KubeContext, error) {
+	kubeconfigPath := a.settings.Get().KubeconfigPath
+	return k8s.ListContexts(kubeconfigPath)
+}
+
+func (a *App) ListK8sNamespaces(contextName string) ([]string, error) {
+	kubeconfigPath := a.settings.Get().KubeconfigPath
+	return k8s.ListNamespaces(kubeconfigPath, contextName)
+}
+
+func (a *App) ListK8sPods(contextName, namespace, search string) ([]k8s.PodInfo, error) {
+	kubeconfigPath := a.settings.Get().KubeconfigPath
+	return k8s.ListPods(kubeconfigPath, contextName, namespace, search)
+}
+
+func (a *App) ConnectK8sPod(contextName, namespace, podName string, port int, language string) (*connection.Target, error) {
+	if a.portForwardMgr == nil {
+		a.portForwardMgr = k8s.NewPortForwardManager()
+	}
+
+	// Create a temporary target ID
+	targetID := uuid.New().String()
+
+	// Start port-forward
+	localPort, err := a.portForwardMgr.Start(contextName, namespace, podName, port, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("port-forward: %w", err)
+	}
+
+	// Connect based on language (port-forward is already ready)
+	var target *connection.Target
+	url := fmt.Sprintf("localhost:%d", localPort)
+
+	if language == "java" {
+		target, err = a.connections.ConnectJava(url, "jmx")
+	} else {
+		httpURL := fmt.Sprintf("http://localhost:%d", localPort)
+		target, err = a.connections.Connect(httpURL)
+	}
+	if err != nil {
+		a.portForwardMgr.Stop(targetID)
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+
+	// Reassign port-forward to the real target ID (without restarting)
+	a.portForwardMgr.Reassign(targetID, target.ID)
+
+	// Store K8s metadata and set label to pod name
+	a.connections.SetK8sInfo(target.ID, contextName, namespace, podName, port)
+	a.connections.SetLabel(target.ID, podName)
+
+	t, ok := a.connections.Get(target.ID)
+	if !ok {
+		return target, nil
+	}
+	return t, nil
 }
 
 // --- Source directory bindings ---

@@ -49,12 +49,20 @@ export namespace connection {
 	    id: string;
 	    url: string;
 	    status: string;
+	    language: string;
+	    connectionMethod?: string;
 	    // Go type: time
 	    lastCheck?: any;
 	    // Go type: time
 	    lastConnected?: any;
 	    label?: string;
 	    sourceDir?: string;
+	    localPid?: number;
+	    javaMainClass?: string;
+	    k8sContext?: string;
+	    k8sNamespace?: string;
+	    k8sPod?: string;
+	    k8sPort?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Target(source);
@@ -65,10 +73,124 @@ export namespace connection {
 	        this.id = source["id"];
 	        this.url = source["url"];
 	        this.status = source["status"];
+	        this.language = source["language"];
+	        this.connectionMethod = source["connectionMethod"];
 	        this.lastCheck = this.convertValues(source["lastCheck"], null);
 	        this.lastConnected = this.convertValues(source["lastConnected"], null);
 	        this.label = source["label"];
 	        this.sourceDir = source["sourceDir"];
+	        this.localPid = source["localPid"];
+	        this.javaMainClass = source["javaMainClass"];
+	        this.k8sContext = source["k8sContext"];
+	        this.k8sNamespace = source["k8sNamespace"];
+	        this.k8sPod = source["k8sPod"];
+	        this.k8sPort = source["k8sPort"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace java {
+	
+	export class LocalJVM {
+	    pid: number;
+	    mainClass: string;
+	    args?: string;
+	    jmxPort?: number;
+	    asprofAvailable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalJVM(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pid = source["pid"];
+	        this.mainClass = source["mainClass"];
+	        this.args = source["args"];
+	        this.jmxPort = source["jmxPort"];
+	        this.asprofAvailable = source["asprofAvailable"];
+	    }
+	}
+
+}
+
+export namespace k8s {
+	
+	export class ContainerInfo {
+	    name: string;
+	    image: string;
+	    profilingPort?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ContainerInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.image = source["image"];
+	        this.profilingPort = source["profilingPort"];
+	    }
+	}
+	export class KubeContext {
+	    name: string;
+	    cluster: string;
+	    namespace?: string;
+	    isCurrent: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new KubeContext(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.cluster = source["cluster"];
+	        this.namespace = source["namespace"];
+	        this.isCurrent = source["isCurrent"];
+	    }
+	}
+	export class PodInfo {
+	    name: string;
+	    namespace: string;
+	    status: string;
+	    age: string;
+	    containers: ContainerInfo[];
+	    language: string;
+	    labels?: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new PodInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.namespace = source["namespace"];
+	        this.status = source["status"];
+	        this.age = source["age"];
+	        this.containers = this.convertValues(source["containers"], ContainerInfo);
+	        this.language = source["language"];
+	        this.labels = source["labels"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -101,6 +223,7 @@ export namespace main {
 	    profileType?: string;
 	    functionName?: string;
 	    functions?: ai.FunctionInfo[];
+	    format?: string;
 	    permissionLevel?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -115,6 +238,7 @@ export namespace main {
 	        this.profileType = source["profileType"];
 	        this.functionName = source["functionName"];
 	        this.functions = this.convertValues(source["functions"], ai.FunctionInfo);
+	        this.format = source["format"];
 	        this.permissionLevel = source["permissionLevel"];
 	    }
 	
@@ -156,12 +280,20 @@ export namespace main {
 	    id: string;
 	    url: string;
 	    status: string;
+	    language: string;
+	    connectionMethod?: string;
 	    // Go type: time
 	    lastCheck?: any;
 	    // Go type: time
 	    lastConnected?: any;
 	    label?: string;
 	    sourceDir?: string;
+	    localPid?: number;
+	    javaMainClass?: string;
+	    k8sContext?: string;
+	    k8sNamespace?: string;
+	    k8sPod?: string;
+	    k8sPort?: number;
 	    profileCount: number;
 	
 	    static createFrom(source: any = {}) {
@@ -173,10 +305,18 @@ export namespace main {
 	        this.id = source["id"];
 	        this.url = source["url"];
 	        this.status = source["status"];
+	        this.language = source["language"];
+	        this.connectionMethod = source["connectionMethod"];
 	        this.lastCheck = this.convertValues(source["lastCheck"], null);
 	        this.lastConnected = this.convertValues(source["lastConnected"], null);
 	        this.label = source["label"];
 	        this.sourceDir = source["sourceDir"];
+	        this.localPid = source["localPid"];
+	        this.javaMainClass = source["javaMainClass"];
+	        this.k8sContext = source["k8sContext"];
+	        this.k8sNamespace = source["k8sNamespace"];
+	        this.k8sPod = source["k8sPod"];
+	        this.k8sPort = source["k8sPort"];
 	        this.profileCount = source["profileCount"];
 	    }
 	
@@ -251,6 +391,7 @@ export namespace storage {
 	    id: string;
 	    targetURL: string;
 	    type: string;
+	    format?: string;
 	    // Go type: time
 	    timestamp: any;
 	    durationSec?: number;
@@ -267,6 +408,7 @@ export namespace storage {
 	        this.id = source["id"];
 	        this.targetURL = source["targetURL"];
 	        this.type = source["type"];
+	        this.format = source["format"];
 	        this.timestamp = this.convertValues(source["timestamp"], null);
 	        this.durationSec = source["durationSec"];
 	        this.size = source["size"];

@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	logger.Init("info", logger.Logger())
+	logger.Init("debug", logger.Logger())
 
 	app := NewApp()
 

@@ -1,9 +1,13 @@
 const BASE = "/api";
 
+export type Language = "go" | "java";
+
 export interface Target {
   id: string;
   url: string;
   status: "connected" | "unreachable" | "saved";
+  language: Language;
+  connectionMethod?: string; // "pprof", "jmx", "async-profiler"
   lastCheck?: string;
   lastConnected?: string;
   label?: string;
@@ -64,7 +68,7 @@ export interface ProfileDetail extends ProfileMeta {
 }
 
 export interface StartProfileRequest {
-  type: "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots";
+  type: "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots" | "lock";
   durationSec?: number;
 }
 
@@ -105,6 +109,27 @@ export const api = {
 
   connect: (url: string): Promise<Target> =>
     isWails() ? wailsCall("AddTarget", url) : request<Target>("/targets", { method: "POST", body: JSON.stringify({ url }) }),
+
+  connectJava: (address: string): Promise<Target> =>
+    wailsCall("AddJavaTarget", address),
+
+  discoverLocalJVMs: (): Promise<{ pid: number; mainClass: string; args?: string; jmxPort?: number; asprofAvailable?: boolean }[]> =>
+    wailsCall("DiscoverLocalJVMs"),
+
+  connectLocalJVM: (pid: number): Promise<Target> =>
+    wailsCall("ConnectLocalJVM", pid),
+
+  listK8sContexts: (): Promise<{ name: string; cluster: string; namespace: string; isCurrent: boolean }[]> =>
+    isWails() ? wailsCall("ListK8sContexts") : request(`/k8s/contexts`),
+
+  listK8sNamespaces: (context: string): Promise<string[]> =>
+    isWails() ? wailsCall("ListK8sNamespaces", context) : request(`/k8s/namespaces?context=${encodeURIComponent(context)}`),
+
+  listK8sPods: (context: string, namespace: string, search: string): Promise<{ name: string; namespace: string; status: string; age: string; language: string; containers: { name: string; image: string; profilingPort?: number }[]; labels?: Record<string, string> }[]> =>
+    isWails() ? wailsCall("ListK8sPods", context, namespace, search) : request(`/k8s/pods?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}&search=${encodeURIComponent(search)}`),
+
+  connectK8sPod: (context: string, namespace: string, podName: string, port: number, language: string): Promise<Target> =>
+    isWails() ? wailsCall("ConnectK8sPod", context, namespace, podName, port, language) : request(`/k8s/connect`, { method: "POST", body: JSON.stringify({ context, namespace, pod: podName, port, language }) }),
 
   disconnect: (id: string): Promise<void> =>
     isWails() ? wailsCall("DisconnectTarget", id) : request<void>(`/targets/${id}`, { method: "DELETE" }),
@@ -270,6 +295,20 @@ export const api = {
   enableCpuMonitoring: (targetId: string): Promise<{ status: string }> =>
     isWails() ? wailsCall("EnableCpuMonitoring", targetId) : request<{ status: string }>(`/targets/${targetId}/cpu/enable`, { method: "POST" }),
 
+  getJavaMonitorHistory: (targetId: string, since?: string): Promise<JavaMonitorHistory> => {
+    if (isWails()) {
+      return wailsCall("GetJavaMonitorHistory", targetId, since ?? "");
+    }
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+    return request<JavaMonitorHistory>(`/targets/${targetId}/java/monitor/history${qs}`);
+  },
+
+  enableJavaMonitoring: (targetId: string): Promise<{ status: string }> =>
+    wailsCall("EnableJavaMonitoring", targetId),
+
+  disableJavaMonitoring: (targetId: string): Promise<{ status: string }> =>
+    wailsCall("DisableJavaMonitoring", targetId),
+
   disableCpuMonitoring: (targetId: string): Promise<{ status: string }> =>
     isWails() ? wailsCall("DisableCpuMonitoring", targetId) : request<{ status: string }>(`/targets/${targetId}/cpu/disable`, { method: "POST" }),
 };
@@ -349,6 +388,22 @@ export interface TraceAnalysisRequest {
   span?: { state: string; start: number; end: number; reason?: string; stack?: string[] };
   goroutineName?: string;
   adjacentSpans?: { state: string; start: number; end: number; reason?: string; stack?: string[] }[];
+}
+
+export interface JavaMonitorDataPoint {
+  timestamp: string;
+  heapUsed: number;
+  heapCommitted: number;
+  heapMax: number;
+  cpuPercent: number;
+  threadCount: number;
+  threadPeak: number;
+  gcCount: number;
+  gcTimeMs: number;
+}
+
+export interface JavaMonitorHistory {
+  points: JavaMonitorDataPoint[];
 }
 
 export interface CpuDataPoint {

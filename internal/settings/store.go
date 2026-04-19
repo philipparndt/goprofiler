@@ -10,7 +10,8 @@ import (
 )
 
 type Settings struct {
-	AIProvider string `json:"aiProvider"` // "claude" or "gh-copilot"
+	AIProvider     string `json:"aiProvider"`               // "claude" or "gh-copilot"
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"` // optional custom kubeconfig path
 }
 
 type Store struct {
