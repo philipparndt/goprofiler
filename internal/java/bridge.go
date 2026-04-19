@@ -103,15 +103,29 @@ type BridgeProcess struct {
 
 // FindBridgeJar finds the jmx-bridge.jar path.
 func FindBridgeJar() string {
-	// Look relative to the executable
-	exe, _ := exec.LookPath("goprofiler")
-	if exe != "" {
-		dir := filepath.Dir(exe)
-		jar := filepath.Join(dir, "tools", "jmx-bridge", "jmx-bridge.jar")
-		return jar
+	// Check common locations
+	candidates := []string{
+		"tools/jmx-bridge/jmx-bridge.jar",                    // dev: run from project root
+		"../tools/jmx-bridge/jmx-bridge.jar",                 // dev: run from bin/
+		filepath.Join(execDir(), "tools", "jmx-bridge", "jmx-bridge.jar"),
+		filepath.Join(execDir(), "..", "tools", "jmx-bridge", "jmx-bridge.jar"),
 	}
-	// Development fallback
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			abs, _ := filepath.Abs(path)
+			return abs
+		}
+	}
+	// Last resort
 	return "tools/jmx-bridge/jmx-bridge.jar"
+}
+
+func execDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(exe)
 }
 
 // CheckJavaAvailable returns true if java is in PATH.
@@ -249,9 +263,11 @@ func CollectJFRViaBridge(ctx context.Context, jmxURL string, durationSec int, pr
 	jar := FindBridgeJar()
 	settings := JFRSettingsForProfile(profileType)
 
+	logger.Info("jfr via bridge", "jar", jar, "url", jmxURL, "duration", durationSec, "settings", settings)
+
 	// Start recording
 	startCmd := exec.CommandContext(ctx, "java", "-jar", jar, jmxURL, "jfr", "start", "goprofiler", settings)
-	startOut, err := startCmd.Output()
+	startOut, err := startCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("jfr start: %w", err)
 	}
@@ -262,7 +278,7 @@ func CollectJFRViaBridge(ctx context.Context, jmxURL string, durationSec int, pr
 		Error       string `json:"error"`
 	}
 	if err := json.Unmarshal(startOut, &startResult); err != nil {
-		return nil, fmt.Errorf("parse jfr start: %w", err)
+		return nil, fmt.Errorf("parse jfr start response %q: %w", string(startOut), err)
 	}
 	if startResult.Error != "" {
 		return nil, fmt.Errorf("jfr start: %s", startResult.Error)
@@ -279,7 +295,7 @@ func CollectJFRViaBridge(ctx context.Context, jmxURL string, durationSec int, pr
 	// Stop and dump recording
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("goprofiler-jfr-%s.jfr", recID))
 	stopCmd := exec.Command("java", "-jar", jar, jmxURL, "jfr", "stop", recID, tmpFile)
-	stopOut, err := stopCmd.Output()
+	stopOut, err := stopCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("jfr stop: %w", err)
 	}

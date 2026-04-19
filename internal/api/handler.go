@@ -258,6 +258,8 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.Info("startProfile", "targetId", targetID, "type", req.Type, "language", target.Language)
+
 	// Java targets use JFR via bridge, not pprof
 	if target.Language == connection.LangJava {
 		h.startJavaProfile(w, target, req.Type, req.DurationSec)
@@ -567,15 +569,18 @@ func (h *Handler) startJavaProfile(w http.ResponseWriter, target *connection.Tar
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"profile": rec})
+			writeJSON(w, http.StatusOK, rec)
 			return
 		}
 		// Remote: short JFR alloc recording (3s, synchronous)
+		logger.Info("java heap via bridge", "url", target.URL)
 		data, err := java.CollectJFRViaBridge(context.Background(), target.URL, 3, java.JFRProfileAlloc)
 		if err != nil {
+			logger.Error("java heap via bridge failed", "error", err)
 			writeError(w, http.StatusBadGateway, "heap snapshot: "+err.Error())
 			return
 		}
+		logger.Info("java heap via bridge done", "bytes", len(data))
 		rec := &storage.ProfileRecord{
 			ID: uuid.New().String(), TargetURL: target.URL,
 			Type: "heap", Format: "jfr", Timestamp: time.Now(), DurationSec: 3,
@@ -584,7 +589,7 @@ func (h *Handler) startJavaProfile(w http.ResponseWriter, target *connection.Tar
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"profile": rec})
+		writeJSON(w, http.StatusOK, rec)
 		return
 	}
 
@@ -773,6 +778,67 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 			"traceType":   true,
 		}
 		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Handle Java heap histogram format
+	if rec.Format == "java-heap-histogram" {
+		var hist java.HeapHistogram
+		if err := json.Unmarshal(data, &hist); err != nil {
+			writeError(w, http.StatusInternalServerError, "parse heap histogram: "+err.Error())
+			return
+		}
+		root := &flamegraph.Node{Name: "root", Value: hist.TotalBytes, Samples: hist.TotalInstances}
+		for _, c := range hist.Classes {
+			root.Children = append(root.Children, &flamegraph.Node{
+				Name: c.ClassName, Value: c.Bytes, Samples: c.Instances,
+			})
+		}
+		var topFuncs []flamegraph.TopFunction
+		for _, c := range hist.Classes {
+			topFuncs = append(topFuncs, flamegraph.TopFunction{
+				Name: c.ClassName,
+				Flat: java.FormatJFRValue(c.Bytes, java.JFRProfileAlloc),
+				FlatPct: float64(c.Bytes) / float64(max(hist.TotalBytes, 1)) * 100,
+				Cum: java.FormatJFRValue(c.Bytes, java.JFRProfileAlloc),
+				CumPct: float64(c.Bytes) / float64(max(hist.TotalBytes, 1)) * 100,
+			})
+		}
+		formatFn := func(v int64) string { return java.FormatJFRValue(v, java.JFRProfileAlloc) }
+		callTree := flamegraph.BuildCallTreeFromFlameGraph(root, formatFn)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": rec.ID, "targetURL": rec.TargetURL, "type": rec.Type,
+			"timestamp": rec.Timestamp, "durationSec": rec.DurationSec,
+			"size": rec.Size, "label": rec.Label, "tags": rec.Tags,
+			"format": rec.Format,
+			"flameGraph": root, "topFunctions": topFuncs, "callTree": callTree,
+		})
+		return
+	}
+
+	// Handle JFR format
+	if rec.Format == "jfr" {
+		jfrType := java.JFRProfileCPU
+		switch rec.Type {
+		case "heap", "allocs":
+			jfrType = java.JFRProfileAlloc
+		case "lock", "mutex":
+			jfrType = java.JFRProfileLock
+		}
+		result, err := java.ParseJFR(data, jfrType)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "parse JFR: "+err.Error())
+			return
+		}
+		formatFn := func(v int64) string { return java.FormatJFRValue(v, jfrType) }
+		callTree := flamegraph.BuildCallTreeFromFlameGraph(result.FlameGraph, formatFn)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": rec.ID, "targetURL": rec.TargetURL, "type": rec.Type,
+			"timestamp": rec.Timestamp, "durationSec": rec.DurationSec,
+			"size": rec.Size, "label": rec.Label, "tags": rec.Tags,
+			"format": "jfr",
+			"flameGraph": result.FlameGraph, "topFunctions": result.TopFunctions, "callTree": callTree,
+		})
 		return
 	}
 
