@@ -53,6 +53,9 @@ func main() {
 	monitorSvc := monitor.NewService()
 	defer monitorSvc.Close()
 
+	cpuMonitorSvc := monitor.NewCpuService()
+	defer cpuMonitorSvc.Close()
+
 	// Start monitoring for all currently active targets
 	for _, t := range connStore.List() {
 		monitorSvc.StartTarget(t.ID, t.URL)
@@ -60,9 +63,12 @@ func main() {
 
 	// Set callbacks so monitor starts/stops with connections
 	connStore.OnConnect = func(id, url string) { monitorSvc.StartTarget(id, url) }
-	connStore.OnDisconnect = func(id string) { monitorSvc.StopTarget(id) }
+	connStore.OnDisconnect = func(id string) {
+		monitorSvc.StopTarget(id)
+		cpuMonitorSvc.StopTarget(id)
+	}
 
-	handler := api.NewHandler(connStore, store, monitorSvc)
+	handler := api.NewHandler(connStore, store, monitorSvc, cpuMonitorSvc)
 
 	r := chi.NewRouter()
 	r.Use(loggerchi.Logger())

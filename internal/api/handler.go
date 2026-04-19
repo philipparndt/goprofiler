@@ -35,6 +35,7 @@ type Handler struct {
 	storage     *storage.Store
 	collector   *profiler.Collector
 	monitor     *monitor.Service
+	cpuMonitor  *monitor.CpuService
 
 	mu              sync.Mutex
 	activeCancel    map[string]context.CancelFunc
@@ -42,12 +43,13 @@ type Handler struct {
 	traceCache      map[string]*traceparser.TraceData
 }
 
-func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service) *Handler {
+func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service, cpuMonitorSvc *monitor.CpuService) *Handler {
 	return &Handler{
 		connections:  connections,
 		storage:      storage,
 		collector:    profiler.NewCollector(),
 		monitor:      monitorSvc,
+		cpuMonitor:   cpuMonitorSvc,
 		activeCancel:    make(map[string]context.CancelFunc),
 		activeRecording: make(map[string]*recordingState),
 		traceCache:      make(map[string]*traceparser.TraceData),
@@ -66,6 +68,9 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/{id}/profiles/stop", h.stopRecording)
 		r.Delete("/{id}/profiles/active", h.cancelProfile)
 		r.Get("/{id}/memstats/history", h.getMemStatsHistory)
+		r.Get("/{id}/cpu/history", h.getCpuHistory)
+		r.Post("/{id}/cpu/enable", h.enableCpuMonitoring)
+		r.Post("/{id}/cpu/disable", h.disableCpuMonitoring)
 		r.Get("/{id}/process-info", h.getProcessInfo)
 		r.Get("/{id}/profiles/available", h.getAvailableProfiles)
 		r.Get("/{id}/goroutine-groups", h.getGoroutineGroups)
@@ -442,6 +447,54 @@ func (h *Handler) getMemStatsHistory(w http.ResponseWriter, r *http.Request) {
 
 	history := h.monitor.GetHistory(target.URL, since)
 	writeJSON(w, http.StatusOK, history)
+}
+
+func (h *Handler) getCpuHistory(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	var since time.Time
+	if s := r.URL.Query().Get("since"); s != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			since = ts
+		}
+	}
+
+	history := h.cpuMonitor.GetHistory(target.URL, since)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"points": history.Points,
+		"active": h.cpuMonitor.IsActive(targetID),
+	})
+}
+
+func (h *Handler) enableCpuMonitoring(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	h.cpuMonitor.StartTarget(targetID, target.URL)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "enabled"})
+}
+
+func (h *Handler) disableCpuMonitoring(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	if _, ok := h.connections.Get(targetID); !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	h.cpuMonitor.StopTarget(targetID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 }
 
 func (h *Handler) getExpvars(w http.ResponseWriter, r *http.Request) {

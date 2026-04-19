@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
-import { api } from "../api";
+import { api, isWails } from "../api";
 import type { Target, ProfileMeta, StartProfileRequest, ProcessInfo, AvailableProfile } from "../api";
 
 function parseTags(raw: string | undefined): string[] {
@@ -16,6 +16,7 @@ import ProfileTypeBadge from "../components/ProfileTypeBadge";
 import { refreshSidebar, onConnectionChange } from "../App";
 import MemoryChart from "../components/MemoryChart";
 import GoroutineChart from "../components/GoroutineChart";
+import CpuChart from "../components/CpuChart";
 import ExpvarMetrics from "../components/ExpvarMetrics";
 
 type ProfileType = "cpu" | "trace" | "heap" | "goroutine" | "block" | "mutex" | "allocs" | "threadcreate" | "all_snapshots";
@@ -33,8 +34,11 @@ export default function ConnectionDetail() {
   const [addTagInput, setAddTagInput] = useState("");
   const [compareBaseProfile, setCompareBaseProfile] = useState<ProfileMeta | null>(null);
   const [monitorWindow, setMonitorWindow] = useState(5); // minutes
+  const [cpuEnabled, setCpuEnabled] = useState(false);
+  const [cpuToggling, setCpuToggling] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [processInfo, setProcessInfo] = useState<ProcessInfo | null>(null);
+  const [sourceDir, setSourceDir] = useState("");
 
   // Derive tab from URL path
   const tab = location.pathname.endsWith("/monitor") ? "monitor" : location.pathname.endsWith("/info") ? "info" : location.pathname.endsWith("/expvars") ? "expvars" : "profiling";
@@ -64,6 +68,7 @@ export default function ConnectionDetail() {
   useEffect(() => { loadTarget(); loadTags(); }, [id]);
   useEffect(() => {
     if (id) api.getProcessInfo(id).then(setProcessInfo).catch(() => {});
+    if (id && isWails()) api.getSourceDir(id).then(setSourceDir).catch(() => {});
   }, [id]);
   // Re-fetch target when connection state changes (e.g. reconnect from sidebar)
   useEffect(() => {
@@ -73,6 +78,12 @@ export default function ConnectionDetail() {
     });
   }, [id]);
   useEffect(() => { if (target) loadProfiles(target.url); }, [typeFilter, tagFilter]);
+  // Check CPU monitoring status when monitor tab is shown
+  useEffect(() => {
+    if (tab === "monitor" && id) {
+      api.getCpuHistory(id).then((res) => setCpuEnabled(res.active)).catch(() => {});
+    }
+  }, [tab, id]);
 
   const disconnect = async () => {
     if (!id) return;
@@ -384,10 +395,74 @@ export default function ConnectionDetail() {
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Goroutines</h2>
             <GoroutineChart targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
           </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>CPU</h2>
+              <button
+                className={`btn btn-sm ${cpuEnabled ? "btn-danger" : "btn-primary"}`}
+                disabled={cpuToggling}
+                onClick={async () => {
+                  setCpuToggling(true);
+                  try {
+                    if (cpuEnabled) {
+                      await api.disableCpuMonitoring(target.id);
+                      setCpuEnabled(false);
+                    } else {
+                      await api.enableCpuMonitoring(target.id);
+                      setCpuEnabled(true);
+                    }
+                  } catch { /* ignore */ }
+                  setCpuToggling(false);
+                }}
+              >
+                {cpuToggling ? "..." : cpuEnabled ? "Disable" : "Enable"}
+              </button>
+              {!cpuEnabled && (
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  CPU profiling adds overhead to the target process
+                </span>
+              )}
+            </div>
+            {cpuEnabled && (
+              <CpuChart targetId={target.id} active={tab === "monitor" && cpuEnabled} windowMs={monitorWindow * 60 * 1000} />
+            )}
+          </div>
         </div>
       )}
 
       {tab === "info" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {isWails() && (
+          <div className="card">
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Source Directory</h3>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="text"
+                value={sourceDir}
+                onChange={(e) => setSourceDir(e.target.value)}
+                onBlur={() => { if (id) api.setSourceDir(id, sourceDir).catch(() => {}); }}
+                placeholder="Path to Go source directory..."
+                className="input"
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
+              />
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={async () => {
+                  try {
+                    const dir = await api.browseSourceDir();
+                    if (dir) {
+                      setSourceDir(dir);
+                      if (id) await api.setSourceDir(id, dir);
+                    }
+                  } catch { /* ignore */ }
+                }}
+              >
+                Browse
+              </button>
+            </div>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Used by AI analysis to read source code for flame graph explanations</p>
+          </div>
+        )}
         <div className="card">
           {processInfo ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -425,6 +500,7 @@ export default function ConnectionDetail() {
           ) : (
             <p style={{ color: "var(--text-muted)" }}>Loading process information...</p>
           )}
+        </div>
         </div>
       )}
 

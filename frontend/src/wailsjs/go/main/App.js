@@ -6,8 +6,20 @@ export function AddTarget(arg1) {
   return window['go']['main']['App']['AddTarget'](arg1);
 }
 
+export function BrowseSourceDir() {
+  return window['go']['main']['App']['BrowseSourceDir']();
+}
+
+export function CancelAnalysis() {
+  return window['go']['main']['App']['CancelAnalysis']();
+}
+
 export function CancelProfile(arg1) {
   return window['go']['main']['App']['CancelProfile'](arg1);
+}
+
+export function CheckClaudeAvailable() {
+  return window['go']['main']['App']['CheckClaudeAvailable']();
 }
 
 export function DeleteProfile(arg1) {
@@ -18,16 +30,36 @@ export function DiffProfiles(arg1, arg2) {
   return window['go']['main']['App']['DiffProfiles'](arg1, arg2);
 }
 
+export function DisableCpuMonitoring(arg1) {
+  return window['go']['main']['App']['DisableCpuMonitoring'](arg1);
+}
+
 export function DisconnectTarget(arg1) {
   return window['go']['main']['App']['DisconnectTarget'](arg1);
+}
+
+export function EnableCpuMonitoring(arg1) {
+  return window['go']['main']['App']['EnableCpuMonitoring'](arg1);
 }
 
 export function ExportProfileData(arg1) {
   return window['go']['main']['App']['ExportProfileData'](arg1);
 }
 
+export function FollowUpAnalysis(arg1) {
+  return window['go']['main']['App']['FollowUpAnalysis'](arg1);
+}
+
+export function GetAvailableAIProviders() {
+  return window['go']['main']['App']['GetAvailableAIProviders']();
+}
+
 export function GetAvailableProfiles(arg1) {
   return window['go']['main']['App']['GetAvailableProfiles'](arg1);
+}
+
+export function GetCpuHistory(arg1, arg2) {
+  return window['go']['main']['App']['GetCpuHistory'](arg1, arg2);
 }
 
 export function GetExpvars(arg1) {
@@ -52,6 +84,14 @@ export function GetProfile(arg1, arg2, arg3) {
 
 export function GetRecordingStatus(arg1) {
   return window['go']['main']['App']['GetRecordingStatus'](arg1);
+}
+
+export function GetSettings() {
+  return window['go']['main']['App']['GetSettings']();
+}
+
+export function GetSourceDir(arg1) {
+  return window['go']['main']['App']['GetSourceDir'](arg1);
 }
 
 export function GetTraceData(arg1) {
@@ -86,8 +126,16 @@ export function RemoveTarget(arg1) {
   return window['go']['main']['App']['RemoveTarget'](arg1);
 }
 
+export function SetSourceDir(arg1, arg2) {
+  return window['go']['main']['App']['SetSourceDir'](arg1, arg2);
+}
+
 export function SetTags(arg1, arg2) {
   return window['go']['main']['App']['SetTags'](arg1, arg2);
+}
+
+export function StartAnalysis(arg1) {
+  return window['go']['main']['App']['StartAnalysis'](arg1);
 }
 
 export function StartProfile(arg1, arg2, arg3) {
@@ -100,4 +148,8 @@ export function StopRecording(arg1) {
 
 export function UpdateLabel(arg1, arg2) {
   return window['go']['main']['App']['UpdateLabel'](arg1, arg2);
+}
+
+export function UpdateSettings(arg1) {
+  return window['go']['main']['App']['UpdateSettings'](arg1);
 }

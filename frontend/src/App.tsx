@@ -6,6 +6,7 @@ import ConnectionDetail from "./pages/ConnectionDetail";
 import ProfileViewer from "./pages/ProfileViewer";
 import DiffViewer from "./pages/DiffViewer";
 import Setup from "./pages/Setup";
+import Settings from "./pages/Settings";
 import { api } from "./api";
 import type { Target } from "./api";
 import "./App.css";
@@ -37,6 +38,7 @@ function App() {
             <Route path="/profiles/diff" element={<DiffViewer />} />
             <Route path="/profiles/:id" element={<ProfileViewer />} />
             <Route path="/setup" element={<Setup />} />
+            <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>
       </div>
@@ -79,26 +81,7 @@ function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="logo">
-          <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <linearGradient id="sidebar-bg" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#16162a"/>
-                <stop offset="100%" stopColor="#1a1a2e"/>
-              </linearGradient>
-              <linearGradient id="sidebar-flame" x1="0" y1="1" x2="0.3" y2="0">
-                <stop offset="0%" stopColor="#6366f1"/>
-                <stop offset="60%" stopColor="#8b5cf6"/>
-                <stop offset="100%" stopColor="#22c55e"/>
-              </linearGradient>
-              <linearGradient id="sidebar-border" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#6366f1" stopOpacity="0.6"/>
-                <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.3"/>
-              </linearGradient>
-            </defs>
-            <rect x="1" y="1" width="30" height="30" rx="7" fill="url(#sidebar-bg)" stroke="url(#sidebar-border)" strokeWidth="1.2"/>
-            <path d="M5 25 V22 C6 22 7 19 8 17 C9 15 9.5 18 10.5 14 C11.5 10 12 13 13 9 C14 5 14.5 7 15.5 4 C16.5 7 17 5 18 8 C19 11 19.5 7 20.5 10 C21.5 13 22 11 23 14 C24 17 24.5 15 25.5 18 C26.5 21 27 19 27 22 V25 Z" fill="url(#sidebar-flame)" opacity="0.9"/>
-            <path d="M5 22 C6 22 7 19 8 17 C9 15 9.5 18 10.5 14 C11.5 10 12 13 13 9 C14 5 14.5 7 15.5 4 C16.5 7 17 5 18 8 C19 11 19.5 7 20.5 10 C21.5 13 22 11 23 14 C24 17 24.5 15 25.5 18 C26.5 21 27 19 27 22" fill="none" stroke="#a78bfa" strokeWidth="0.8" opacity="0.6"/>
-          </svg>
+          <img src="/logo.png" alt="GoProfiler" width="28" height="28" />
           <span>GoProfiler</span>
         </div>
       </div>
@@ -216,6 +199,12 @@ function Sidebar() {
               <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
             </svg>
             Quick Start
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+            Settings
           </NavLink>
         </div>
       </nav>

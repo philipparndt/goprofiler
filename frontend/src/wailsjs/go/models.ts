@@ -1,3 +1,28 @@
+export namespace ai {
+	
+	export class FunctionInfo {
+	    Name: string;
+	    Flat: string;
+	    FlatPct: number;
+	    Cum: string;
+	    CumPct: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FunctionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.Flat = source["Flat"];
+	        this.FlatPct = source["FlatPct"];
+	        this.Cum = source["Cum"];
+	        this.CumPct = source["CumPct"];
+	    }
+	}
+
+}
+
 export namespace connection {
 	
 	export class Target {
@@ -9,6 +34,7 @@ export namespace connection {
 	    // Go type: time
 	    lastConnected?: any;
 	    label?: string;
+	    sourceDir?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Target(source);
@@ -22,6 +48,7 @@ export namespace connection {
 	        this.lastCheck = this.convertValues(source["lastCheck"], null);
 	        this.lastConnected = this.convertValues(source["lastConnected"], null);
 	        this.label = source["label"];
+	        this.sourceDir = source["sourceDir"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -47,6 +74,64 @@ export namespace connection {
 
 export namespace main {
 	
+	export class AnalysisRequest {
+	    targetId: string;
+	    profileId: string;
+	    mode: string;
+	    profileType?: string;
+	    functionName?: string;
+	    functions?: ai.FunctionInfo[];
+	    permissionLevel?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AnalysisRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.targetId = source["targetId"];
+	        this.profileId = source["profileId"];
+	        this.mode = source["mode"];
+	        this.profileType = source["profileType"];
+	        this.functionName = source["functionName"];
+	        this.functions = this.convertValues(source["functions"], ai.FunctionInfo);
+	        this.permissionLevel = source["permissionLevel"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class FollowUpRequest {
+	    targetUrl: string;
+	    message: string;
+	    permissionLevel?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FollowUpRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.targetUrl = source["targetUrl"];
+	        this.message = source["message"];
+	        this.permissionLevel = source["permissionLevel"];
+	    }
+	}
 	export class TargetWithCount {
 	    id: string;
 	    url: string;
@@ -56,6 +141,7 @@ export namespace main {
 	    // Go type: time
 	    lastConnected?: any;
 	    label?: string;
+	    sourceDir?: string;
 	    profileCount: number;
 	
 	    static createFrom(source: any = {}) {
@@ -70,6 +156,7 @@ export namespace main {
 	        this.lastCheck = this.convertValues(source["lastCheck"], null);
 	        this.lastConnected = this.convertValues(source["lastConnected"], null);
 	        this.label = source["label"];
+	        this.sourceDir = source["sourceDir"];
 	        this.profileCount = source["profileCount"];
 	    }
 	

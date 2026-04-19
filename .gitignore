@@ -97,3 +97,4 @@ out/
 .pnp.*
 bin
 logo.afdesign~lock~
+*.afdesign~lock~

@@ -1,10 +1,136 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import type { ProfileDetail, CallTreeNode, TopFunction } from "../api";
+import type { ProfileDetail, CallTreeNode, TopFunction, FlameNode, AnalysisFunction } from "../api";
+import { isWails } from "../api";
+import AiAnalysisPanel from "../components/AiAnalysisPanel";
+import ContextMenu from "../components/ContextMenu";
 import flamegraph from "d3-flame-graph";
+import type { FlameGraphNode } from "d3-flame-graph";
 import { select } from "d3-selection";
 import TraceViewer from "../components/TraceViewer/TraceViewer";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 0) return "-" + formatBytes(-bytes);
+  if (bytes >= 1 << 30) return (bytes / (1 << 30)).toFixed(1) + " GB";
+  if (bytes >= 1 << 20) return (bytes / (1 << 20)).toFixed(1) + " MB";
+  if (bytes >= 1 << 10) return (bytes / (1 << 10)).toFixed(1) + " KB";
+  return bytes + " B";
+}
+
+function formatDuration(ns: number): string {
+  if (ns < 0) return "-" + formatDuration(-ns);
+  if (ns >= 1e9) return (ns / 1e9).toFixed(2) + "s";
+  if (ns >= 1e6) return (ns / 1e6).toFixed(2) + "ms";
+  if (ns >= 1e3) return (ns / 1e3).toFixed(1) + "\u00b5s";
+  return ns + "ns";
+}
+
+function formatValue(value: number, profileType: string): string {
+  if (profileType === "heap" || profileType === "allocs") return formatBytes(value);
+  if (profileType === "cpu") return formatDuration(value);
+  return value.toLocaleString() + " samples";
+}
+
+function createTooltip(rootValue: number, profileType: string): any {
+  let tooltipEl: HTMLDivElement | null = null;
+
+  // d3-flame-graph requires tooltip to be a callable function with .show/.hide properties
+  const tip: any = function () {};
+
+  tip.show = function (event: MouseEvent, d: FlameGraphNode) {
+    if (!tooltipEl) {
+      tooltipEl = document.createElement("div");
+      tooltipEl.className = "d3-flame-graph-tip";
+      Object.assign(tooltipEl.style, {
+        position: "absolute",
+        display: "none",
+        opacity: "0",
+        pointerEvents: "none",
+        background: "var(--bg-surface, #1a1a2e)",
+        border: "1px solid var(--border, #333)",
+        borderRadius: "6px",
+        padding: "8px 12px",
+        fontSize: "12px",
+        color: "var(--text-primary, #e0e0e0)",
+        zIndex: "1000",
+        maxWidth: "400px",
+        whiteSpace: "nowrap",
+        transition: "opacity 0.15s",
+      });
+      document.body.appendChild(tooltipEl);
+    }
+
+    const cumValue = d.value;
+    const pct = rootValue > 0 ? ((cumValue / rootValue) * 100).toFixed(1) : "0.0";
+
+    const samples = d.data.samples ?? 0;
+
+    tooltipEl.innerHTML = `
+      <div style="font-weight:600;margin-bottom:4px;white-space:normal;word-break:break-all">${d.data.name}</div>
+      <div style="font-family:monospace">
+        <span>${formatValue(cumValue, profileType)}</span>
+        <span style="color:var(--text-muted,#888);margin-left:12px">${pct}%</span>
+      </div>
+      <div style="font-family:monospace;font-size:10px;color:var(--text-muted,#666);margin-top:2px">${samples.toLocaleString()} sample${samples !== 1 ? "s" : ""}</div>
+    `;
+
+    const tipWidth = tooltipEl.offsetWidth;
+    const tipHeight = tooltipEl.offsetHeight;
+    let left = event.pageX + 8;
+    let top = event.pageY + 8;
+    if (left + tipWidth > window.innerWidth) left = event.pageX - tipWidth - 8;
+    if (left < 0) left = 4;
+    if (top + tipHeight > window.innerHeight) top = event.pageY - tipHeight - 8;
+    if (top < 0) top = 4;
+
+    tooltipEl.style.left = left + "px";
+    tooltipEl.style.top = top + "px";
+    tooltipEl.style.display = "block";
+    tooltipEl.style.opacity = "1";
+  };
+
+  tip.hide = function () {
+    if (tooltipEl) {
+      tooltipEl.style.display = "none";
+      tooltipEl.style.opacity = "0";
+    }
+  };
+
+  tip.destroy = function () {
+    if (tooltipEl) {
+      tooltipEl.remove();
+      tooltipEl = null;
+    }
+  };
+
+  return tip;
+}
+
+function findNodeByName(root: FlameNode, name: string): FlameNode | null {
+  const stack = [root];
+  while (stack.length > 0) {
+    const n = stack.pop()!;
+    if (n.name === name) return n;
+    if (n.children) {
+      for (const child of n.children) stack.push(child);
+    }
+  }
+  return null;
+}
+
+function collectSubtreeNames(node: FlameNode): Set<string> {
+  const names = new Set<string>();
+  const stack = [node];
+  while (stack.length > 0) {
+    const n = stack.pop()!;
+    names.add(n.name);
+    if (n.children) {
+      for (const child of n.children) stack.push(child);
+    }
+  }
+  return names;
+}
 
 type Tab = "flamegraph" | "calltree";
 type SortKey = "name" | "self" | "selfPct" | "cum" | "cumPct" | "calls";
@@ -24,6 +150,12 @@ export default function ProfileViewer() {
   const [prevHeapSummary, setPrevHeapSummary] = useState<any>(null);
   const [refreshDiff, setRefreshDiff] = useState<any>(null);
   const [showNewAllocs, setShowNewAllocs] = useState(false);
+  const [zoomedNode, setZoomedNode] = useState<FlameNode | null>(null);
+  const [aiPanelVisible, setAiPanelVisible] = useState(false);
+  const [aiError, setAiError] = useState<string | undefined>();
+  const [permLevel, setPermLevel] = useState<"read-only" | "edit-files" | "full">("read-only");
+  const [claudeAvailable, setClaudeAvailable] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; name: string } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
 
@@ -37,6 +169,10 @@ export default function ProfileViewer() {
   };
 
   useEffect(() => { loadProfile(); setPrevHeapSummary(null); setRefreshDiff(null); setShowNewAllocs(false); }, [id]);
+  useEffect(() => {
+    if (isWails()) api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
+  }, []);
+
   useEffect(() => { loadProfile(); }, [filterPprof, valueMode]);
 
   const fgData = showNewAllocs && refreshDiff?.flameGraph ? refreshDiff.flameGraph : profile?.flameGraph;
@@ -53,7 +189,7 @@ export default function ProfileViewer() {
       .inverted(inverted)
       .minFrameSize(1)
       .transitionDuration(300)
-      .tooltip(true)
+      .tooltip(createTooltip(fgData?.value || 0, profile.type))
       .selfValue(false)
       .setColorMapper((d: any) => {
         // Diff color scheme for new allocations view
@@ -84,9 +220,21 @@ export default function ProfileViewer() {
 
     fgRef.current = chart;
 
+    chart.onClick((d: any) => {
+      const node = d.data as FlameNode;
+      // If clicked node is the root (same value as full graph), treat as unzoomed
+      if (node === fgData || node.value === fgData?.value) {
+        setZoomedNode(null);
+      } else {
+        setZoomedNode(node);
+      }
+    });
+
     select(chartRef.current)
       .datum(fgData)
       .call(chart as any);
+
+    setZoomedNode(null);
   }, [profile, colorMode, inverted, tab, showNewAllocs, refreshDiff]);
 
   useEffect(() => {
@@ -101,6 +249,22 @@ export default function ProfileViewer() {
     setSelectedFn(name);
     setSearch(name);
   }, []);
+
+  const getAnalysisFunctions = useCallback((): AnalysisFunction[] => {
+    const topFns = (showNewAllocs ? refreshDiff?.topFunctions : profile?.topFunctions) || [];
+    let fns = topFns;
+    if (zoomedNode) {
+      const names = collectSubtreeNames(zoomedNode);
+      fns = fns.filter((f: TopFunction) => names.has(f.name));
+    }
+    return fns.slice(0, 15).map((f: TopFunction) => ({
+      Name: f.name,
+      Flat: f.flat,
+      FlatPct: f.flatPercent,
+      Cum: f.cum,
+      CumPct: f.cumPercent,
+    }));
+  }, [profile, refreshDiff, showNewAllocs, zoomedNode]);
 
   // Tag management hooks -- must be before any early returns
   const [tags, setTags] = useState<string[]>([]);
@@ -318,7 +482,7 @@ export default function ProfileViewer() {
               <button className={`btn btn-sm ${inverted ? "btn-primary" : "btn-secondary"}`} onClick={() => setInverted(!inverted)}>
                 {inverted ? "Icicle" : "Flame"} View
               </button>
-              <button className="btn btn-secondary btn-sm" onClick={() => fgRef.current?.resetZoom()}>
+              <button className="btn btn-secondary btn-sm" onClick={() => { fgRef.current?.resetZoom(); setZoomedNode(null); }}>
                 Reset Zoom
               </button>
               {isHeapProfile && (
@@ -336,16 +500,93 @@ export default function ProfileViewer() {
                   )}
                 </div>
               )}
+              {isWails() && claudeAvailable && (
+                <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                  <button
+                    className="btn-ai"
+                    onClick={async () => {
+                      const fns = getAnalysisFunctions();
+                      if (!fns.length) return;
+                      setAiError(undefined);
+                      setPermLevel("read-only");
+                      setAiPanelVisible(true);
+                      try {
+                        await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                      } catch (e: any) {
+                        setAiError(e?.message || String(e));
+                      }
+                    }}
+                  >
+                    Explain
+                  </button>
+                  <button
+                    className="btn-ai"
+                    onClick={async () => {
+                      const fns = getAnalysisFunctions();
+                      if (!fns.length) return;
+                      setAiError(undefined);
+                      setPermLevel("read-only");
+                      setAiPanelVisible(true);
+                      try {
+                        await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                      } catch (e: any) {
+                        setAiError(e?.message || String(e));
+                      }
+                    }}
+                  >
+                    Optimize
+                  </button>
+                </div>
+              )}
+              {isWails() && !claudeAvailable && (
+                <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }} title="Install an AI CLI to enable analysis">
+                  AI: CLI not found
+                </span>
+              )}
             </div>
           </div>
 
           <div className="card" style={{ padding: 12, marginBottom: 16, overflow: "auto" }}>
-            <div ref={chartRef} style={{ minHeight: 300 }} />
+            <div
+              ref={chartRef}
+              style={{ minHeight: 300 }}
+              onContextMenu={(e) => {
+                if (!isWails() || !claudeAvailable) return;
+                const target = e.target as HTMLElement;
+                const label = target.closest(".d3-flame-graph-label") || target.closest("g");
+                if (!label) return;
+                const text = label.textContent?.trim();
+                if (!text) return;
+                e.preventDefault();
+                setCtxMenu({ x: e.clientX, y: e.clientY, name: text });
+              }}
+            />
           </div>
 
-          {((showNewAllocs ? refreshDiff?.topFunctions : profile.topFunctions) || []).length > 0 && (
-            <TopFunctionsTable functions={showNewAllocs ? refreshDiff.topFunctions : profile.topFunctions} onSelect={handleSelectFunction} />
-          )}
+          {(() => {
+            const allFunctions = (showNewAllocs ? refreshDiff?.topFunctions : profile.topFunctions) || [];
+            if (allFunctions.length === 0) return null;
+            const filteredFunctions = zoomedNode
+              ? (() => {
+                  const names = collectSubtreeNames(zoomedNode);
+                  return allFunctions.filter((f: TopFunction) => names.has(f.name));
+                })()
+              : allFunctions;
+            return (
+              <>
+                {zoomedNode && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-muted)" }}>Filtered to:</span>
+                    <code style={{ background: "var(--bg-surface)", padding: "2px 8px", borderRadius: 4, fontSize: 11 }}>{zoomedNode.name}</code>
+                    <button className="btn btn-secondary btn-sm" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => { fgRef.current?.resetZoom(); setZoomedNode(null); }}>
+                      Clear
+                    </button>
+                  </div>
+                )}
+                <TopFunctionsTable functions={filteredFunctions} onSelect={handleSelectFunction} />
+              </>
+            );
+          })()}
         </>
       )}
 
@@ -356,6 +597,59 @@ export default function ProfileViewer() {
         />
       )}
       </>}
+      <AiAnalysisPanel
+        visible={aiPanelVisible}
+        onClose={() => { setAiPanelVisible(false); setAiError(undefined); }}
+        error={aiError}
+        permLevel={permLevel}
+        onPermLevelChange={setPermLevel}
+        onFollowUp={async (message) => {
+          setAiError(undefined);
+          try {
+            await api.followUpAnalysis({ targetUrl: profile?.targetURL || "", message, permissionLevel: permLevel });
+          } catch (e: any) {
+            setAiError(e?.message || String(e));
+          }
+        }}
+      />
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          functionName={ctxMenu.name}
+          onClose={() => setCtxMenu(null)}
+          onExplain={async () => {
+            setAiError(undefined);
+            setAiPanelVisible(true);
+            // Find the subtree for this function and compute its top functions
+            const subtreeFns: AnalysisFunction[] = [];
+            if (fgData) {
+              const node = findNodeByName(fgData, ctxMenu.name);
+              if (node) {
+                const names = collectSubtreeNames(node);
+                const allFns = (showNewAllocs ? refreshDiff?.topFunctions : profile?.topFunctions) || [];
+                const filtered = allFns.filter((f: TopFunction) => names.has(f.name));
+                for (const f of filtered.slice(0, 20)) {
+                  subtreeFns.push({ Name: f.name, Flat: f.flat, FlatPct: f.flatPercent, Cum: f.cum, CumPct: f.cumPercent });
+                }
+              }
+            }
+            try {
+              await api.startAnalysis({
+                targetId: profile?.targetURL || "",
+                profileId: id || "",
+                mode: "explain-function",
+                profileType: profile?.type || "",
+                functionName: ctxMenu.name,
+                functions: subtreeFns,
+                permissionLevel: permLevel,
+              });
+            } catch (e: any) {
+              setAiError(e?.message || String(e));
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

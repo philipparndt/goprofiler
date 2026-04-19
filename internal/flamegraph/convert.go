@@ -10,6 +10,7 @@ import (
 type Node struct {
 	Name     string  `json:"name"`
 	Value    int64   `json:"value"`
+	Samples  int64   `json:"samples"`
 	Children []*Node `json:"children,omitempty"`
 }
 
@@ -77,10 +78,12 @@ func Convert(p *profile.Profile, overrideIdx ...int) *Result {
 					node.Children = append(node.Children, child)
 				}
 				child.Value += value
+				child.Samples++
 				node = child
 			}
 		}
 		root.Value += value
+		root.Samples++
 	}
 
 	// Find alloc_space index for heap profiles (to show both inuse and alloc)

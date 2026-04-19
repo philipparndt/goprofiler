@@ -30,6 +30,7 @@ type Target struct {
 	LastCheck     *time.Time `json:"lastCheck,omitempty"`
 	LastConnected *time.Time `json:"lastConnected,omitempty"`
 	Label         string     `json:"label,omitempty"`
+	SourceDir     string     `json:"sourceDir,omitempty"`
 }
 
 // savedTarget is the JSON-persisted form.
@@ -38,6 +39,7 @@ type savedTarget struct {
 	URL           string    `json:"url"`
 	Label         string    `json:"label,omitempty"`
 	LastConnected time.Time `json:"lastConnected"`
+	SourceDir     string    `json:"sourceDir,omitempty"`
 }
 
 type Store struct {
@@ -214,6 +216,23 @@ func (s *Store) Remove(id string) error {
 	return nil
 }
 
+func (s *Store) SetSourceDir(id, dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if t, ok := s.active[id]; ok {
+		t.SourceDir = dir
+		s.persist()
+		return nil
+	}
+	if t, ok := s.saved[id]; ok {
+		t.SourceDir = dir
+		s.persist()
+		return nil
+	}
+	return fmt.Errorf("target not found: %s", id)
+}
+
 func (s *Store) Get(id string) (*Target, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -285,6 +304,7 @@ func (s *Store) loadFromFile() {
 			Label:         st.Label,
 			Status:        StatusSaved,
 			LastConnected: &lc,
+			SourceDir:     st.SourceDir,
 		}
 	}
 
@@ -306,6 +326,7 @@ func (s *Store) persist() {
 			URL:           t.URL,
 			Label:         t.Label,
 			LastConnected: lc,
+			SourceDir:     t.SourceDir,
 		})
 	}
 	for _, t := range s.saved {
@@ -318,6 +339,7 @@ func (s *Store) persist() {
 			URL:           t.URL,
 			Label:         t.Label,
 			LastConnected: lc,
+			SourceDir:     t.SourceDir,
 		})
 	}
 

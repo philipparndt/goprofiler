@@ -24,6 +24,7 @@ export interface ProfileMeta {
 export interface FlameNode {
   name: string;
   value: number;
+  samples: number;
   children?: FlameNode[];
 }
 
@@ -69,7 +70,7 @@ export interface StartProfileRequest {
 
 // Runtime detection: Wails injects window.go at startup
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isWails(): boolean {
+export function isWails(): boolean {
   return !!(window as any).go;
 }
 
@@ -203,6 +204,36 @@ export const api = {
   getProcessInfo: (targetId: string): Promise<ProcessInfo> =>
     isWails() ? wailsCall("GetProcessInfo", targetId) : request<ProcessInfo>(`/targets/${targetId}/process-info`),
 
+  getSourceDir: (targetId: string): Promise<string> =>
+    wailsCall("GetSourceDir", targetId),
+
+  setSourceDir: (targetId: string, path: string): Promise<void> =>
+    wailsCall("SetSourceDir", targetId, path),
+
+  browseSourceDir: (): Promise<string> =>
+    wailsCall("BrowseSourceDir"),
+
+  checkClaudeAvailable: (): Promise<boolean> =>
+    wailsCall("CheckClaudeAvailable"),
+
+  startAnalysis: (req: AnalysisRequest): Promise<void> =>
+    wailsCall("StartAnalysis", req),
+
+  cancelAnalysis: (): Promise<void> =>
+    wailsCall("CancelAnalysis"),
+
+  followUpAnalysis: (req: { targetUrl: string; message: string; permissionLevel?: string }): Promise<void> =>
+    wailsCall("FollowUpAnalysis", req),
+
+  getSettings: (): Promise<Record<string, string>> =>
+    wailsCall("GetSettings"),
+
+  updateSettings: (settings: Record<string, string>): Promise<void> =>
+    wailsCall("UpdateSettings", settings),
+
+  getAvailableAIProviders: (): Promise<{ id: string; name: string; available: boolean }[]> =>
+    wailsCall("GetAvailableAIProviders"),
+
   getAvailableProfiles: (targetId: string): Promise<AvailableProfile[]> =>
     isWails() ? wailsCall("GetAvailableProfiles", targetId) : request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),
 
@@ -224,6 +255,20 @@ export const api = {
     const qs = since ? `?since=${encodeURIComponent(since)}` : "";
     return request<MemStatsHistory>(`/targets/${targetId}/memstats/history${qs}`);
   },
+
+  getCpuHistory: (targetId: string, since?: string): Promise<CpuHistoryResponse> => {
+    if (isWails()) {
+      return wailsCall("GetCpuHistory", targetId, since ?? "");
+    }
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+    return request<CpuHistoryResponse>(`/targets/${targetId}/cpu/history${qs}`);
+  },
+
+  enableCpuMonitoring: (targetId: string): Promise<{ status: string }> =>
+    isWails() ? wailsCall("EnableCpuMonitoring", targetId) : request<{ status: string }>(`/targets/${targetId}/cpu/enable`, { method: "POST" }),
+
+  disableCpuMonitoring: (targetId: string): Promise<{ status: string }> =>
+    isWails() ? wailsCall("DisableCpuMonitoring", targetId) : request<{ status: string }>(`/targets/${targetId}/cpu/disable`, { method: "POST" }),
 };
 
 export interface TraceData {
@@ -272,4 +317,32 @@ export interface MemStatsGCEvent {
 export interface MemStatsHistory {
   points: MemStatsDataPoint[];
   gcEvents: MemStatsGCEvent[];
+}
+
+export interface AnalysisFunction {
+  Name: string;
+  Flat: string;
+  FlatPct: number;
+  Cum: string;
+  CumPct: number;
+}
+
+export interface AnalysisRequest {
+  targetId: string;
+  profileId: string;
+  mode: "explain" | "optimize" | "explain-function";
+  profileType?: string;
+  functionName?: string;
+  functions?: AnalysisFunction[];
+  permissionLevel?: "read-only" | "edit-files" | "full";
+}
+
+export interface CpuDataPoint {
+  timestamp: string;
+  cpuPercent: number;
+}
+
+export interface CpuHistoryResponse {
+  points: CpuDataPoint[];
+  active: boolean;
 }

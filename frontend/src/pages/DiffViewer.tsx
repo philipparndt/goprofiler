@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { ProfileDetail, CallTreeNode } from "../api";
 import flamegraph from "d3-flame-graph";
+import type { FlameGraphNode } from "d3-flame-graph";
 import { select } from "d3-selection";
 
 type DiffTab = "flamegraph" | "calltree";
@@ -176,6 +177,53 @@ function diffColorMapper(d: any): string {
   return "#6b7280";
 }
 
+function createDiffTooltip(rootValue: number): any {
+  let tooltipEl: HTMLDivElement | null = null;
+
+  // d3-flame-graph requires tooltip to be a callable function with .show/.hide properties
+  const tip: any = function () {};
+
+  tip.show = function (event: MouseEvent, d: FlameGraphNode) {
+    if (!tooltipEl) {
+      tooltipEl = document.createElement("div");
+      tooltipEl.className = "d3-flame-graph-tip";
+      Object.assign(tooltipEl.style, {
+        position: "absolute", display: "none", opacity: "0", pointerEvents: "none",
+        background: "var(--bg-surface, #1a1a2e)", border: "1px solid var(--border, #333)",
+        borderRadius: "6px", padding: "8px 12px", fontSize: "12px",
+        color: "var(--text-primary, #e0e0e0)", zIndex: "1000", maxWidth: "400px",
+        whiteSpace: "nowrap", transition: "opacity 0.15s",
+      });
+      document.body.appendChild(tooltipEl);
+    }
+    const val = d.data.value;
+    const pct = rootValue > 0 ? ((Math.abs(val) / rootValue) * 100).toFixed(1) : "0.0";
+    const sign = val > 0 ? "+" : val < 0 ? "-" : "";
+    const color = val > 0 ? "#ef4444" : val < 0 ? "#3b82f6" : "#888";
+    tooltipEl.innerHTML = `
+      <div style="font-weight:600;margin-bottom:4px;white-space:normal;word-break:break-all">${d.data.name}</div>
+      <div style="font-family:monospace;color:${color}">${sign}${Math.abs(val).toLocaleString()} (${pct}%)</div>
+    `;
+    let left = event.pageX + 8, top = event.pageY + 8;
+    if (left + tooltipEl.offsetWidth > window.innerWidth) left = event.pageX - tooltipEl.offsetWidth - 8;
+    if (top + tooltipEl.offsetHeight > window.innerHeight) top = event.pageY - tooltipEl.offsetHeight - 8;
+    tooltipEl.style.left = Math.max(4, left) + "px";
+    tooltipEl.style.top = Math.max(4, top) + "px";
+    tooltipEl.style.display = "block";
+    tooltipEl.style.opacity = "1";
+  };
+
+  tip.hide = function () {
+    if (tooltipEl) { tooltipEl.style.display = "none"; tooltipEl.style.opacity = "0"; }
+  };
+
+  tip.destroy = function () {
+    if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
+  };
+
+  return tip;
+}
+
 function DiffFlameGraph({
   data,
   hideUnchanged,
@@ -195,7 +243,7 @@ function DiffFlameGraph({
       .cellHeight(20)
       .minFrameSize(1)
       .transitionDuration(300)
-      .tooltip(true)
+      .tooltip(createDiffTooltip(data?.value || 0))
       .selfValue(true)
       .setColorMapper(diffColorMapper);
 

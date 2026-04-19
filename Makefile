@@ -46,6 +46,7 @@ dev-backend:
 
 # Desktop (Wails) build
 build-desktop: build-frontend
+	cp logo.png build/appicon.png
 	wails build
 
 dev-desktop:

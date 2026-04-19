@@ -14,7 +14,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/philipparndt/go-logger"
 
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/philipparndt/goprofiler/internal/ai"
 	"github.com/philipparndt/goprofiler/internal/connection"
+	"github.com/philipparndt/goprofiler/internal/settings"
 	"github.com/philipparndt/goprofiler/internal/expvar"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
 	"github.com/philipparndt/goprofiler/internal/monitor"
@@ -35,13 +39,18 @@ type App struct {
 	ctx         context.Context
 	connections *connection.Store
 	storage     *storage.Store
+	settings    *settings.Store
 	monitor     *monitor.Service
+	cpuMonitor  *monitor.CpuService
 	collector   *profiler.Collector
 
 	mu              sync.Mutex
 	activeCancel    map[string]context.CancelFunc
 	activeRecording map[string]*recordingState
 	traceCache      map[string]*traceparser.TraceData
+
+	analysisCancel    context.CancelFunc
+	analysisSessionID string
 }
 
 func NewApp() *App {
@@ -74,20 +83,36 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.connections = connStore
 
+	settingsStore, err := settings.NewStore(configDir)
+	if err != nil {
+		logger.Error("failed to initialize settings store", "error", err)
+		return
+	}
+	a.settings = settingsStore
+
 	monitorSvc := monitor.NewService()
 	a.monitor = monitorSvc
+
+	cpuMonitorSvc := monitor.NewCpuService()
+	a.cpuMonitor = cpuMonitorSvc
 
 	for _, t := range connStore.List() {
 		monitorSvc.StartTarget(t.ID, t.URL)
 	}
 
 	connStore.OnConnect = func(id, url string) { monitorSvc.StartTarget(id, url) }
-	connStore.OnDisconnect = func(id string) { monitorSvc.StopTarget(id) }
+	connStore.OnDisconnect = func(id string) {
+		monitorSvc.StopTarget(id)
+		cpuMonitorSvc.StopTarget(id)
+	}
 
 	logger.Info("GoProfiler desktop started")
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	if a.cpuMonitor != nil {
+		a.cpuMonitor.Close()
+	}
 	if a.monitor != nil {
 		a.monitor.Close()
 	}
@@ -533,6 +558,45 @@ func (a *App) GetMemStatsHistory(targetID, since string) (any, error) {
 	return a.monitor.GetHistory(target.URL, sinceTime), nil
 }
 
+func (a *App) GetCpuHistory(targetID, since string) (any, error) {
+	target, ok := a.connections.Get(targetID)
+	if !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+
+	var sinceTime time.Time
+	if since != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, since); err == nil {
+			sinceTime = ts
+		}
+	}
+
+	history := a.cpuMonitor.GetHistory(target.URL, sinceTime)
+	return map[string]any{
+		"points": history.Points,
+		"active": a.cpuMonitor.IsActive(targetID),
+	}, nil
+}
+
+func (a *App) EnableCpuMonitoring(targetID string) (map[string]string, error) {
+	target, ok := a.connections.Get(targetID)
+	if !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+
+	a.cpuMonitor.StartTarget(targetID, target.URL)
+	return map[string]string{"status": "enabled"}, nil
+}
+
+func (a *App) DisableCpuMonitoring(targetID string) (map[string]string, error) {
+	if _, ok := a.connections.Get(targetID); !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+
+	a.cpuMonitor.StopTarget(targetID)
+	return map[string]string{"status": "disabled"}, nil
+}
+
 func (a *App) GetGoroutineGroups(targetID string, top int) (any, error) {
 	target, ok := a.connections.Get(targetID)
 	if !ok {
@@ -595,6 +659,204 @@ func (a *App) GetTraceData(profileID string) (*traceparser.TraceData, error) {
 	a.mu.Unlock()
 
 	return td, nil
+}
+
+// --- AI analysis bindings ---
+
+func (a *App) CheckClaudeAvailable() bool {
+	provider := ai.Provider(a.settings.Get().AIProvider)
+	return ai.CheckAvailable(provider)
+}
+
+func (a *App) GetSettings() map[string]string {
+	s := a.settings.Get()
+	return map[string]string{
+		"aiProvider": s.AIProvider,
+	}
+}
+
+func (a *App) UpdateSettings(s map[string]string) {
+	current := a.settings.Get()
+	if v, ok := s["aiProvider"]; ok {
+		current.AIProvider = v
+	}
+	a.settings.Update(current)
+}
+
+func (a *App) GetAvailableAIProviders() []map[string]any {
+	providers := []struct {
+		id, name string
+	}{
+		{"claude", "Claude Code"},
+		{"gh-copilot", "GitHub Copilot"},
+	}
+	var result []map[string]any
+	for _, p := range providers {
+		result = append(result, map[string]any{
+			"id":        p.id,
+			"name":      p.name,
+			"available": ai.CheckAvailable(ai.Provider(p.id)),
+		})
+	}
+	return result
+}
+
+type AnalysisRequest struct {
+	TargetID     string            `json:"targetId"`
+	ProfileID    string            `json:"profileId"`
+	Mode         string            `json:"mode"` // "explain", "optimize", "explain-function"
+	ProfileType  string            `json:"profileType,omitempty"`
+	FunctionName string            `json:"functionName,omitempty"`
+	Functions       []ai.FunctionInfo `json:"functions,omitempty"`
+	PermissionLevel string            `json:"permissionLevel,omitempty"` // "read-only", "edit-files", "full"
+}
+
+func (a *App) StartAnalysis(req AnalysisRequest) error {
+	// Get source directory — try by target ID first, then search all targets by URL
+	sourceDir := ""
+	if req.TargetID != "" {
+		if target, ok := a.connections.Get(req.TargetID); ok {
+			sourceDir = target.SourceDir
+		} else {
+			// Search by URL in case targetId is actually a URL
+			for _, t := range a.connections.List() {
+				if t.URL == req.TargetID {
+					sourceDir = t.SourceDir
+					break
+				}
+			}
+		}
+	}
+
+	if sourceDir == "" {
+		return fmt.Errorf("no source directory configured for this target")
+	}
+
+	// Cancel any existing analysis
+	a.CancelAnalysis()
+
+	// Build prompt
+	var prompt string
+	switch req.Mode {
+	case "explain":
+		prompt = ai.BuildExplainPrompt(req.Functions, sourceDir, req.ProfileType)
+	case "optimize":
+		prompt = ai.BuildOptimizePrompt(req.Functions, sourceDir, req.ProfileType)
+	case "explain-function":
+		prompt = ai.BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType)
+	default:
+		return fmt.Errorf("unknown analysis mode: %s", req.Mode)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.analysisCancel = cancel
+
+	a.analysisSessionID = "" // new session
+	provider := ai.Provider(a.settings.Get().AIProvider)
+	permLevel := ai.PermissionLevel(req.PermissionLevel)
+	if permLevel == "" {
+		permLevel = ai.PermReadOnly
+	}
+	events, err := ai.RunWithProvider(ctx, provider, sourceDir, prompt, "", permLevel)
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	// Stream events to frontend via Wails events, capture session ID
+	go func() {
+		defer cancel()
+		for evt := range events {
+			if evt.SessionID != "" {
+				a.analysisSessionID = evt.SessionID
+			}
+			wailsRuntime.EventsEmit(a.ctx, "ai:event", evt)
+		}
+		wailsRuntime.EventsEmit(a.ctx, "ai:done", nil)
+	}()
+
+	return nil
+}
+
+type FollowUpRequest struct {
+	TargetURL       string `json:"targetUrl"`
+	Message         string `json:"message"`
+	PermissionLevel string `json:"permissionLevel,omitempty"`
+}
+
+func (a *App) FollowUpAnalysis(req FollowUpRequest) error {
+	a.CancelAnalysis()
+
+	// Look up source dir by target URL
+	sourceDir := ""
+	for _, t := range a.connections.List() {
+		if t.URL == req.TargetURL {
+			sourceDir = t.SourceDir
+			break
+		}
+	}
+	if sourceDir == "" {
+		return fmt.Errorf("no source directory configured for this target")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.analysisCancel = cancel
+
+	provider := ai.Provider(a.settings.Get().AIProvider)
+	// Resume the existing session if we have one
+	followPermLevel := ai.PermissionLevel(req.PermissionLevel)
+	if followPermLevel == "" {
+		followPermLevel = ai.PermReadOnly
+	}
+	events, err := ai.RunWithProvider(ctx, provider, sourceDir, req.Message, a.analysisSessionID, followPermLevel)
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	go func() {
+		defer cancel()
+		for evt := range events {
+			if evt.SessionID != "" {
+				a.analysisSessionID = evt.SessionID
+			}
+			wailsRuntime.EventsEmit(a.ctx, "ai:event", evt)
+		}
+		wailsRuntime.EventsEmit(a.ctx, "ai:done", nil)
+	}()
+
+	return nil
+}
+
+func (a *App) CancelAnalysis() {
+	if a.analysisCancel != nil {
+		a.analysisCancel()
+		a.analysisCancel = nil
+	}
+}
+
+// --- Source directory bindings ---
+
+func (a *App) BrowseSourceDir() (string, error) {
+	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Select Source Directory",
+	})
+	if err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func (a *App) SetSourceDir(targetID, path string) error {
+	return a.connections.SetSourceDir(targetID, path)
+}
+
+func (a *App) GetSourceDir(targetID string) (string, error) {
+	target, ok := a.connections.Get(targetID)
+	if !ok {
+		return "", fmt.Errorf("target not found")
+	}
+	return target.SourceDir, nil
 }
 
 // --- Process info / discovery bindings ---
