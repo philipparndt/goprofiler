@@ -58,6 +58,10 @@ export function DisconnectTarget(arg1) {
   return window['go']['main']['App']['DisconnectTarget'](arg1);
 }
 
+export function DiscoverK8s(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DiscoverK8s'](arg1, arg2, arg3);
+}
+
 export function DiscoverLocalJVMs() {
   return window['go']['main']['App']['DiscoverLocalJVMs']();
 }

@@ -207,24 +207,6 @@ export namespace k8s {
 	        this.profilingPort = source["profilingPort"];
 	    }
 	}
-	export class KubeContext {
-	    name: string;
-	    cluster: string;
-	    namespace?: string;
-	    isCurrent: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new KubeContext(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.cluster = source["cluster"];
-	        this.namespace = source["namespace"];
-	        this.isCurrent = source["isCurrent"];
-	    }
-	}
 	export class PodInfo {
 	    name: string;
 	    namespace: string;
@@ -267,6 +249,61 @@ export namespace k8s {
 		    return a;
 		}
 	}
+	export class KubeContext {
+	    name: string;
+	    cluster: string;
+	    namespace?: string;
+	    isCurrent: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new KubeContext(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.cluster = source["cluster"];
+	        this.namespace = source["namespace"];
+	        this.isCurrent = source["isCurrent"];
+	    }
+	}
+	export class DiscoveryResult {
+	    currentContext: string;
+	    contexts: KubeContext[];
+	    namespaces: string[];
+	    pods: PodInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DiscoveryResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currentContext = source["currentContext"];
+	        this.contexts = this.convertValues(source["contexts"], KubeContext);
+	        this.namespaces = source["namespaces"];
+	        this.pods = this.convertValues(source["pods"], PodInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 
 }
 

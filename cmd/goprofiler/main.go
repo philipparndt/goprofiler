@@ -95,7 +95,7 @@ func main() {
 	portFwdMgr := k8s.NewPortForwardManager()
 	defer portFwdMgr.StopAll()
 
-	handler := api.NewHandler(connStore, store, monitorSvc, cpuMonitorSvc)
+	handler := api.NewHandler(connStore, store, monitorSvc, cpuMonitorSvc, javaMonitorSvc)
 	handler.SetK8sConfig(&api.K8sConfig{
 		PortForwardMgr: portFwdMgr,
 	})

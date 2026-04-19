@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -237,6 +238,71 @@ func CaptureThreadDumpViaBridge(jmxURL string) (*JmxThreadDump, error) {
 	}
 
 	return &dump, nil
+}
+
+// CollectJFRViaBridge starts a JFR recording via the JMX bridge, waits, then stops and returns the data.
+func CollectJFRViaBridge(ctx context.Context, jmxURL string, durationSec int, profileType JFRProfileType) ([]byte, error) {
+	if !CheckJavaAvailable() {
+		return nil, fmt.Errorf("java not found in PATH")
+	}
+
+	jar := FindBridgeJar()
+	settings := JFRSettingsForProfile(profileType)
+
+	// Start recording
+	startCmd := exec.CommandContext(ctx, "java", "-jar", jar, jmxURL, "jfr", "start", "goprofiler", settings)
+	startOut, err := startCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("jfr start: %w", err)
+	}
+
+	// Parse recording ID from response
+	var startResult struct {
+		RecordingID int64  `json:"recordingId"`
+		Error       string `json:"error"`
+	}
+	if err := json.Unmarshal(startOut, &startResult); err != nil {
+		return nil, fmt.Errorf("parse jfr start: %w", err)
+	}
+	if startResult.Error != "" {
+		return nil, fmt.Errorf("jfr start: %s", startResult.Error)
+	}
+
+	recID := fmt.Sprintf("%d", startResult.RecordingID)
+
+	// Wait for duration
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Duration(durationSec) * time.Second):
+	}
+
+	// Stop and dump recording
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("goprofiler-jfr-%s.jfr", recID))
+	stopCmd := exec.Command("java", "-jar", jar, jmxURL, "jfr", "stop", recID, tmpFile)
+	stopOut, err := stopCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("jfr stop: %w", err)
+	}
+
+	var stopResult struct {
+		File  string `json:"file"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(stopOut, &stopResult); err != nil {
+		return nil, fmt.Errorf("parse jfr stop: %w", err)
+	}
+	if stopResult.Error != "" {
+		return nil, fmt.Errorf("jfr stop: %s", stopResult.Error)
+	}
+
+	// Read the JFR file
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return nil, fmt.Errorf("read jfr: %w", err)
+	}
+	os.Remove(tmpFile)
+
+	return data, nil
 }
 
 // Placeholder to avoid "unused" warning

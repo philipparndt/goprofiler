@@ -18,6 +18,7 @@ import (
 	"github.com/philipparndt/goprofiler/internal/k8s"
 	"github.com/philipparndt/goprofiler/internal/expvar"
 	"github.com/philipparndt/goprofiler/internal/flamegraph"
+	"github.com/philipparndt/goprofiler/internal/java"
 	"github.com/philipparndt/goprofiler/internal/traceparser"
 	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/profiler"
@@ -33,12 +34,13 @@ type recordingState struct {
 }
 
 type Handler struct {
-	connections *connection.Store
-	storage     *storage.Store
-	collector   *profiler.Collector
-	monitor     *monitor.Service
-	cpuMonitor  *monitor.CpuService
-	k8sConfig   *K8sConfig
+	connections  *connection.Store
+	storage      *storage.Store
+	collector    *profiler.Collector
+	monitor      *monitor.Service
+	cpuMonitor   *monitor.CpuService
+	javaMonitor  *java.JavaMonitorService
+	k8sConfig    *K8sConfig
 
 	mu              sync.Mutex
 	activeCancel    map[string]context.CancelFunc
@@ -46,13 +48,14 @@ type Handler struct {
 	traceCache      map[string]*traceparser.TraceData
 }
 
-func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service, cpuMonitorSvc *monitor.CpuService) *Handler {
+func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service, cpuMonitorSvc *monitor.CpuService, javaMonitorSvc *java.JavaMonitorService) *Handler {
 	return &Handler{
-		connections:  connections,
-		storage:      storage,
-		collector:    profiler.NewCollector(),
-		monitor:      monitorSvc,
-		cpuMonitor:   cpuMonitorSvc,
+		connections:     connections,
+		storage:         storage,
+		collector:       profiler.NewCollector(),
+		monitor:         monitorSvc,
+		cpuMonitor:      cpuMonitorSvc,
+		javaMonitor:     javaMonitorSvc,
 		activeCancel:    make(map[string]context.CancelFunc),
 		activeRecording: make(map[string]*recordingState),
 		traceCache:      make(map[string]*traceparser.TraceData),
@@ -78,6 +81,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Get("/{id}/cpu/history", h.getCpuHistory)
 		r.Post("/{id}/cpu/enable", h.enableCpuMonitoring)
 		r.Post("/{id}/cpu/disable", h.disableCpuMonitoring)
+		r.Get("/{id}/java/monitor/history", h.getJavaMonitorHistory)
 		r.Get("/{id}/process-info", h.getProcessInfo)
 		r.Get("/{id}/profiles/available", h.getAvailableProfiles)
 		r.Get("/{id}/goroutine-groups", h.getGoroutineGroups)
@@ -254,11 +258,9 @@ func (h *Handler) startProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Java targets cannot be profiled via pprof
+	// Java targets use JFR via bridge, not pprof
 	if target.Language == connection.LangJava {
-		writeError(w, http.StatusBadRequest,
-			"Java profiling is not yet available for remote JMX targets. "+
-				"Use the desktop app with 'Local Java' connection, or capture a JFR recording externally.")
+		h.startJavaProfile(w, target, req.Type, req.DurationSec)
 		return
 	}
 
@@ -540,6 +542,125 @@ func (h *Handler) disableCpuMonitoring(w http.ResponseWriter, r *http.Request) {
 
 	h.cpuMonitor.StopTarget(targetID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
+}
+
+func (h *Handler) startJavaProfile(w http.ResponseWriter, target *connection.Target, profileType string, durationSec int) {
+	if !java.CheckJavaAvailable() {
+		writeError(w, http.StatusBadRequest, "Java runtime required for profiling. Install JDK and ensure 'java' is in PATH.")
+		return
+	}
+
+	if profileType == "heap" {
+		// Try jcmd for local, or short JFR alloc for remote — both sync
+		if target.LocalPid > 0 {
+			hist, err := java.CaptureHeapHistogram(target.LocalPid)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			histJSON, _ := json.Marshal(hist)
+			rec := &storage.ProfileRecord{
+				ID: uuid.New().String(), TargetURL: target.URL,
+				Type: "heap", Format: "java-heap-histogram", Timestamp: time.Now(),
+			}
+			if err := h.storage.SaveProfile(rec, histJSON); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"profile": rec})
+			return
+		}
+		// Remote: short JFR alloc recording (3s, synchronous)
+		data, err := java.CollectJFRViaBridge(context.Background(), target.URL, 3, java.JFRProfileAlloc)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "heap snapshot: "+err.Error())
+			return
+		}
+		rec := &storage.ProfileRecord{
+			ID: uuid.New().String(), TargetURL: target.URL,
+			Type: "heap", Format: "jfr", Timestamp: time.Now(), DurationSec: 3,
+		}
+		if err := h.storage.SaveProfile(rec, data); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"profile": rec})
+		return
+	}
+
+	if durationSec <= 0 {
+		durationSec = 10
+	}
+
+	jfrType := java.JFRProfileCPU
+	switch profileType {
+	case "allocs":
+		jfrType = java.JFRProfileAlloc
+	case "lock", "mutex", "block":
+		jfrType = java.JFRProfileLock
+	}
+
+	// Background recording
+	targetID := target.ID
+	ctx, cancel := context.WithCancel(context.Background())
+	rs := &recordingState{cancel: cancel, done: make(chan struct{}), ptype: profileType}
+
+	h.mu.Lock()
+	h.activeCancel[targetID] = cancel
+	h.activeRecording[targetID] = rs
+	h.mu.Unlock()
+
+	go func() {
+		defer close(rs.done)
+		var data []byte
+		var err error
+		if target.LocalPid > 0 {
+			settings := java.JFRSettingsForProfile(jfrType)
+			data, err = java.CollectJFRProfile(ctx, target.LocalPid, durationSec, settings)
+		} else {
+			data, err = java.CollectJFRViaBridge(ctx, target.URL, durationSec, jfrType)
+		}
+		if err != nil {
+			rs.err = err
+			return
+		}
+		rec := &storage.ProfileRecord{
+			ID: uuid.New().String(), TargetURL: target.URL,
+			Type: profileType, Format: "jfr", Timestamp: time.Now(), DurationSec: durationSec,
+		}
+		if err := h.storage.SaveProfile(rec, data); err != nil {
+			rs.err = err
+			return
+		}
+		rs.profileID = rec.ID
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "recording", "type": profileType})
+}
+
+func (h *Handler) getJavaMonitorHistory(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "id")
+
+	target, ok := h.connections.Get(targetID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	if h.javaMonitor == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"points": []any{}})
+		return
+	}
+
+	var since time.Time
+	if s := r.URL.Query().Get("since"); s != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			since = ts
+		}
+	}
+
+	history := h.javaMonitor.GetHistory(target.URL, since)
+	writeJSON(w, http.StatusOK, history)
 }
 
 func (h *Handler) getExpvars(w http.ResponseWriter, r *http.Request) {

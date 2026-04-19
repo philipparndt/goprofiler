@@ -888,21 +888,22 @@ func (a *App) ConnectLocalJVM(pid int) (*connection.Target, error) {
 }
 
 func (a *App) startJavaProfile(target *connection.Target, profileType string, durationSec int) (map[string]any, error) {
-	if target.LocalPid == 0 {
-		return nil, fmt.Errorf(
-			"Java profiling requires a local JVM connection. " +
-				"Use 'Local Java' in the connect dialog to discover and connect to local JVMs.",
-		)
-	}
-
 	pid := target.LocalPid
 	targetID := target.ID
 	targetURL := target.URL
 
-	// For Java "heap": use jcmd class histogram (live objects, instant)
-	// For Java "allocs": use JFR allocation events (total allocations over time)
+	// For Java "heap": use jcmd class histogram (local) or bridge (remote)
 	if profileType == "heap" {
-		return a.startJavaHeapHistogram(target)
+		if pid > 0 {
+			return a.startJavaHeapHistogram(target)
+		}
+		// For remote targets, fall through to JFR alloc recording
+		profileType = "allocs"
+	}
+
+	// No local PID and no Java available for bridge — can't profile
+	if pid == 0 && !java.CheckJavaAvailable() {
+		return nil, fmt.Errorf("Java runtime required for profiling. Install JDK and ensure 'java' is in PATH.")
 	}
 
 	if durationSec <= 0 {
@@ -933,8 +934,17 @@ func (a *App) startJavaProfile(target *connection.Target, profileType string, du
 	go func() {
 		defer close(rs.done)
 
-		settings := java.JFRSettingsForProfile(jfrType)
-		data, err := java.CollectJFRProfile(ctx, pid, durationSec, settings)
+		var data []byte
+		var err error
+
+		if pid > 0 {
+			// Local JVM: use jcmd JFR
+			settings := java.JFRSettingsForProfile(jfrType)
+			data, err = java.CollectJFRProfile(ctx, pid, durationSec, settings)
+		} else {
+			// Remote JVM: use JMX bridge JFR
+			data, err = java.CollectJFRViaBridge(ctx, targetURL, durationSec, jfrType)
+		}
 		if err != nil {
 			rs.err = err
 			return
