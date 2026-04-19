@@ -119,6 +119,16 @@ export const api = {
   connectLocalJVM: (pid: number): Promise<Target> =>
     wailsCall("ConnectLocalJVM", pid),
 
+  discoverK8s: (context?: string, namespace?: string, search?: string): Promise<{
+    currentContext: string;
+    contexts: { name: string; cluster: string; namespace: string; isCurrent: boolean }[];
+    namespaces: string[];
+    pods: { name: string; namespace: string; status: string; age: string; language: string; containers: { name: string; image: string; profilingPort?: number }[]; labels?: Record<string, string> }[];
+  }> =>
+    isWails()
+      ? wailsCall("DiscoverK8s", context ?? "", namespace ?? "", search ?? "")
+      : request(`/k8s/discover?context=${encodeURIComponent(context ?? "")}&namespace=${encodeURIComponent(namespace ?? "")}&search=${encodeURIComponent(search ?? "")}`),
+
   listK8sContexts: (): Promise<{ name: string; cluster: string; namespace: string; isCurrent: boolean }[]> =>
     isWails() ? wailsCall("ListK8sContexts") : request(`/k8s/contexts`),
 

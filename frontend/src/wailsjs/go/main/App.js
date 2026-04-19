@@ -26,6 +26,10 @@ export function CheckClaudeAvailable() {
   return window['go']['main']['App']['CheckClaudeAvailable']();
 }
 
+export function CheckJavaAvailable() {
+  return window['go']['main']['App']['CheckJavaAvailable']();
+}
+
 export function ConnectK8sPod(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ConnectK8sPod'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -96,6 +100,10 @@ export function GetGoroutineGroups(arg1, arg2) {
 
 export function GetJavaMonitorHistory(arg1, arg2) {
   return window['go']['main']['App']['GetJavaMonitorHistory'](arg1, arg2);
+}
+
+export function GetJavaThreadDump(arg1) {
+  return window['go']['main']['App']['GetJavaThreadDump'](arg1);
 }
 
 export function GetMemStatsHistory(arg1, arg2) {

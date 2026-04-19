@@ -1347,8 +1347,26 @@ func findGoroutine(td *traceparser.TraceData, id uint64) *ai.GoroutineInfo {
 	return nil
 }
 
+func (a *App) CheckJavaAvailable() bool {
+	return java.CheckJavaAvailable()
+}
+
+func (a *App) GetJavaThreadDump(targetID string) (*java.JmxThreadDump, error) {
+	target, ok := a.connections.Get(targetID)
+	if !ok {
+		return nil, fmt.Errorf("target not found")
+	}
+	return java.CaptureThreadDumpViaBridge(target.URL)
+}
+
 // --- Kubernetes bindings ---
 
+func (a *App) DiscoverK8s(contextName, namespace, search string) (*k8s.DiscoveryResult, error) {
+	kubeconfigPath := a.settings.Get().KubeconfigPath
+	return k8s.Discover(kubeconfigPath, contextName, namespace, search)
+}
+
+// Keep individual endpoints for backward compat
 func (a *App) ListK8sContexts() ([]k8s.KubeContext, error) {
 	kubeconfigPath := a.settings.Get().KubeconfigPath
 	return k8s.ListContexts(kubeconfigPath)

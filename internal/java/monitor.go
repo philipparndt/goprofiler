@@ -40,11 +40,12 @@ type javaTargetWorker struct {
 }
 
 type JavaMonitorService struct {
-	mu      sync.RWMutex
-	data    map[string]*javaTargetData   // keyed by address (host:port)
-	workers map[string]*javaTargetWorker // keyed by target ID
-	addrs   map[string]string            // target ID -> address
-	pids    map[string]int               // address -> local PID (if known)
+	mu       sync.RWMutex
+	data     map[string]*javaTargetData   // keyed by address (host:port)
+	workers  map[string]*javaTargetWorker // keyed by target ID
+	addrs    map[string]string            // target ID -> address
+	pids     map[string]int               // address -> local PID (if known)
+	bridges  map[string]*BridgeProcess    // address -> bridge monitor process
 }
 
 func NewJavaMonitorService() *JavaMonitorService {
@@ -53,6 +54,7 @@ func NewJavaMonitorService() *JavaMonitorService {
 		workers: make(map[string]*javaTargetWorker),
 		addrs:   make(map[string]string),
 		pids:    make(map[string]int),
+		bridges: make(map[string]*BridgeProcess),
 	}
 }
 
@@ -89,7 +91,22 @@ func (s *JavaMonitorService) StartTarget(id, address string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.workers[id] = &javaTargetWorker{cancel: cancel}
 
-	logger.Info("java monitor started", "id", id, "address", address)
+	// Try to start JMX bridge monitor (preferred, works locally and remotely)
+	if CheckJavaAvailable() {
+		if _, exists := s.bridges[address]; !exists {
+			bp, snapCh, err := StartBridgeMonitor(address)
+			if err == nil {
+				s.bridges[address] = bp
+				logger.Info("java monitor started via bridge", "id", id, "address", address)
+				go s.consumeBridge(ctx, address, snapCh)
+				return
+			}
+			logger.Warn("jmx bridge failed, falling back to jcmd", "error", err)
+		}
+	}
+
+	// Fallback to jcmd polling (local JVMs only)
+	logger.Info("java monitor started via jcmd", "id", id, "address", address)
 	go s.pollLoop(ctx, address)
 }
 
@@ -99,8 +116,71 @@ func (s *JavaMonitorService) StopTarget(id string) {
 	if w, ok := s.workers[id]; ok {
 		w.cancel()
 		delete(s.workers, id)
+	}
+	if addr, ok := s.addrs[id]; ok {
+		// Stop bridge if no other targets use this address
+		otherUsers := false
+		for otherId, otherAddr := range s.addrs {
+			if otherId != id && otherAddr == addr {
+				otherUsers = true
+				break
+			}
+		}
+		if !otherUsers {
+			if bp, ok := s.bridges[addr]; ok {
+				bp.Stop()
+				delete(s.bridges, addr)
+			}
+		}
 		delete(s.addrs, id)
-		logger.Info("java monitor stopped", "id", id)
+	}
+	logger.Info("java monitor stopped", "id", id)
+}
+
+func (s *JavaMonitorService) consumeBridge(ctx context.Context, address string, snapCh <-chan JmxSnapshot) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case snap, ok := <-snapCh:
+			if !ok {
+				return
+			}
+
+			// Convert bridge snapshot to data point
+			var totalGcCount, totalGcTime int64
+			for _, gc := range snap.GC {
+				totalGcCount += gc.Count
+				totalGcTime += gc.TimeMs
+			}
+
+			point := JavaDataPoint{
+				Timestamp:     time.Now(),
+				HeapUsed:      snap.Heap.Used,
+				HeapCommitted: snap.Heap.Committed,
+				HeapMax:       snap.Heap.Max,
+				CpuPercent:    snap.CPU.Process * 100,
+				ThreadCount:   snap.Threads.Count,
+				ThreadPeak:    snap.Threads.Peak,
+				GCCount:       totalGcCount,
+				GCTimeMs:      totalGcTime,
+			}
+
+			s.mu.RLock()
+			td := s.data[address]
+			s.mu.RUnlock()
+
+			if td == nil {
+				continue
+			}
+
+			td.mu.Lock()
+			td.points = append(td.points, point)
+			if len(td.points) > MaxPoints {
+				td.points = td.points[len(td.points)-MaxPoints:]
+			}
+			td.mu.Unlock()
+		}
 	}
 }
 

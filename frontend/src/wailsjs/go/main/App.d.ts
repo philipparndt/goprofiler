@@ -19,6 +19,8 @@ export function CancelProfile(arg1:string):Promise<void>;
 
 export function CheckClaudeAvailable():Promise<boolean>;
 
+export function CheckJavaAvailable():Promise<boolean>;
+
 export function ConnectK8sPod(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<connection.Target>;
 
 export function ConnectLocalJVM(arg1:number):Promise<connection.Target>;
@@ -54,6 +56,8 @@ export function GetExpvars(arg1:string):Promise<Record<string, any>>;
 export function GetGoroutineGroups(arg1:string,arg2:number):Promise<any>;
 
 export function GetJavaMonitorHistory(arg1:string,arg2:string):Promise<any>;
+
+export function GetJavaThreadDump(arg1:string):Promise<java.JmxThreadDump>;
 
 export function GetMemStatsHistory(arg1:string,arg2:string):Promise<any>;
 

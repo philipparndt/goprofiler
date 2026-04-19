@@ -59,16 +59,30 @@ func main() {
 	cpuMonitorSvc := monitor.NewCpuService()
 	defer cpuMonitorSvc.Close()
 
+	javaMonitorSvc := java.NewJavaMonitorService()
+	defer javaMonitorSvc.Close()
+
 	// Start monitoring for all currently active targets
 	for _, t := range connStore.List() {
-		monitorSvc.StartTarget(t.ID, t.URL)
+		if t.Language == connection.LangJava {
+			javaMonitorSvc.StartTarget(t.ID, t.URL)
+		} else {
+			monitorSvc.StartTarget(t.ID, t.URL)
+		}
 	}
 
 	// Set callbacks so monitor starts/stops with connections
-	connStore.OnConnect = func(id, url string) { monitorSvc.StartTarget(id, url) }
+	connStore.OnConnect = func(id, url string) {
+		if t, ok := connStore.Get(id); ok && t.Language == connection.LangJava {
+			javaMonitorSvc.StartTarget(id, url)
+		} else {
+			monitorSvc.StartTarget(id, url)
+		}
+	}
 	connStore.OnDisconnect = func(id string) {
 		monitorSvc.StopTarget(id)
 		cpuMonitorSvc.StopTarget(id)
+		javaMonitorSvc.StopTarget(id)
 	}
 	connStore.ValidateJava = func(url string) error {
 		host, port, err := java.ParseJMXAddress(url)

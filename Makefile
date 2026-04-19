@@ -26,7 +26,10 @@ help:
 # Build everything: frontend then backend (with embedded SPA)
 build: build-frontend build-backend
 
-build-frontend:
+build-jmx-bridge:
+	cd tools/jmx-bridge && javac JmxBridge.java && jar cfe jmx-bridge.jar JmxBridge *.class && rm -f *.class
+
+build-frontend: build-jmx-bridge
 	cd frontend && npm install && npm run build
 	rm -rf internal/frontend/dist
 	cp -r frontend/dist internal/frontend/dist

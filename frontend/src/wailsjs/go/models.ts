@@ -110,6 +110,62 @@ export namespace connection {
 
 export namespace java {
 	
+	export class JmxThread {
+	    id: number;
+	    name: string;
+	    state: string;
+	    deadlocked: boolean;
+	    stack?: string[];
+	    waitingOn?: string;
+	    lockOwner?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new JmxThread(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.state = source["state"];
+	        this.deadlocked = source["deadlocked"];
+	        this.stack = source["stack"];
+	        this.waitingOn = source["waitingOn"];
+	        this.lockOwner = source["lockOwner"];
+	    }
+	}
+	export class JmxThreadDump {
+	    threads: JmxThread[];
+	    deadlockCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new JmxThreadDump(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.threads = this.convertValues(source["threads"], JmxThread);
+	        this.deadlockCount = source["deadlockCount"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class LocalJVM {
 	    pid: number;
 	    mainClass: string;

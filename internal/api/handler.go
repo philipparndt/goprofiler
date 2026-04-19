@@ -103,6 +103,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/tags", h.listTags)
 
 	r.Route("/k8s", func(r chi.Router) {
+		r.Get("/discover", h.discoverK8s)
 		r.Get("/contexts", h.listK8sContexts)
 		r.Get("/namespaces", h.listK8sNamespaces)
 		r.Get("/pods", h.listK8sPods)
@@ -997,6 +998,22 @@ func (h *Handler) diffProfiles(w http.ResponseWriter, r *http.Request) {
 type K8sConfig struct {
 	KubeconfigPath string
 	PortForwardMgr *k8s.PortForwardManager
+}
+
+func (h *Handler) discoverK8s(w http.ResponseWriter, r *http.Request) {
+	ctxName := r.URL.Query().Get("context")
+	ns := r.URL.Query().Get("namespace")
+	search := r.URL.Query().Get("search")
+	kubeconfigPath := ""
+	if h.k8sConfig != nil {
+		kubeconfigPath = h.k8sConfig.KubeconfigPath
+	}
+	result, err := k8s.Discover(kubeconfigPath, ctxName, ns, search)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) listK8sContexts(w http.ResponseWriter, r *http.Request) {
