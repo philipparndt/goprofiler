@@ -20,6 +20,7 @@ export default function K8sConnectWizard({ onConnected }: Props) {
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [langFilter, setLangFilter] = useState<"all" | "go" | "java" | "unknown">("go");
+  const [nsDropdownOpen, setNsDropdownOpen] = useState(false);
   const [error, setError] = useState("");
 
   // Load contexts on mount
@@ -149,20 +150,52 @@ export default function K8sConnectWizard({ onConnected }: Props) {
       {step === "pods" && (
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>Namespace:</span>
-              <select
+              <button
                 className="input"
-                style={{ fontSize: 12, padding: "4px 8px", width: "auto", minWidth: 120 }}
-                value={selectedNs}
-                onChange={(e) => {
-                  setSelectedNs(e.target.value);
-                  loadPods(selectedCtx, e.target.value, search);
+                style={{
+                  fontSize: 12, padding: "4px 12px 4px 8px", width: "auto", minWidth: 120,
+                  cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
                 }}
+                onClick={() => setNsDropdownOpen(!nsDropdownOpen)}
               >
-                {namespaces.map((ns) => <option key={ns} value={ns}>{ns}</option>)}
-                {!namespaces.includes(selectedNs) && <option value={selectedNs}>{selectedNs}</option>}
-              </select>
+                <span style={{ flex: 1 }}>{selectedNs}</span>
+                <span style={{ fontSize: 8, color: "var(--text-muted)" }}>{nsDropdownOpen ? "\u25b2" : "\u25bc"}</span>
+              </button>
+              {nsDropdownOpen && (
+                <>
+                  <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={() => setNsDropdownOpen(false)} />
+                  <div style={{
+                    position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 100,
+                    background: "var(--bg-surface, #1a1a2e)", border: "1px solid var(--border)",
+                    borderRadius: 6, padding: 4, minWidth: 180, maxHeight: 240, overflowY: "auto",
+                    boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+                  }}>
+                    {(namespaces.length > 0 ? namespaces : [selectedNs]).map((ns) => (
+                      <button
+                        key={ns}
+                        style={{
+                          display: "block", width: "100%", textAlign: "left",
+                          padding: "6px 10px", fontSize: 12, border: "none", borderRadius: 4, cursor: "pointer",
+                          background: ns === selectedNs ? "var(--accent-muted, rgba(139,92,246,0.15))" : "none",
+                          color: ns === selectedNs ? "var(--accent, #8b5cf6)" : "var(--text-primary)",
+                          fontFamily: "var(--font-mono)",
+                        }}
+                        onMouseEnter={(e) => { if (ns !== selectedNs) (e.target as HTMLElement).style.background = "var(--bg-hover, #2a2a3e)"; }}
+                        onMouseLeave={(e) => { if (ns !== selectedNs) (e.target as HTMLElement).style.background = "none"; }}
+                        onClick={() => {
+                          setSelectedNs(ns);
+                          setNsDropdownOpen(false);
+                          loadPods(selectedCtx, ns, search);
+                        }}
+                      >
+                        {ns}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
             <input
               className="input"

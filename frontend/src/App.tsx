@@ -68,7 +68,8 @@ function Sidebar() {
     };
   }, [load]);
 
-  const allTargets = [...activeTargets, ...savedTargets].sort((a, b) => a.url.localeCompare(b.url));
+  const displayName = (t: Target) => t.label || t.url.replace(/^https?:\/\//, "");
+  const allTargets = [...activeTargets, ...savedTargets].sort((a, b) => displayName(a).localeCompare(displayName(b)));
 
   const handleReconnect = async (id: string) => {
     try {
@@ -106,7 +107,7 @@ function Sidebar() {
             {allTargets.map((t) => {
               const basePath = `/connections/${t.id}`;
               const isConnectionActive = location.pathname.startsWith(basePath);
-              const displayUrl = t.url.replace(/^https?:\/\//, "");
+              const displayUrl = displayName(t);
               const isConnected = t.status === "connected" || t.status === "unreachable";
 
               return (
@@ -131,7 +132,7 @@ function Sidebar() {
                   >
                     <span className={`status-dot ${t.status}`} style={{ flexShrink: 0 }} />
                     <LanguageBadge language={t.language || "go"} />
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{t.label || displayUrl}</span>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{displayUrl}</span>
                     {!isConnected && (
                       <button
                         onClick={(e) => { e.preventDefault(); handleReconnect(t.id); }}

@@ -392,18 +392,18 @@ export default function ConnectionDetail() {
 
           {/* Java monitoring */}
           {target.language === "java" && (
-            <JavaMonitorCharts targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
+            <JavaMonitorCharts key={target.id} targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
           )}
 
           {/* Go monitoring */}
           {(target.language === "go" || !target.language) && (<>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Memory</h2>
-            <MemoryChart targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
+            <MemoryChart key={target.id} targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
           </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Goroutines</h2>
-            <GoroutineChart targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
+            <GoroutineChart key={target.id} targetId={target.id} active={tab === "monitor"} windowMs={monitorWindow * 60 * 1000} />
           </div>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -434,7 +434,7 @@ export default function ConnectionDetail() {
               )}
             </div>
             {cpuEnabled && (
-              <CpuChart targetId={target.id} active={tab === "monitor" && cpuEnabled} windowMs={monitorWindow * 60 * 1000} />
+              <CpuChart key={target.id} targetId={target.id} active={tab === "monitor" && cpuEnabled} windowMs={monitorWindow * 60 * 1000} />
             )}
           </div>
           </>)}

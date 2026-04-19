@@ -218,9 +218,16 @@ func (a *App) ListSavedTargets() ([]TargetWithCount, error) {
 
 func (a *App) ReconnectTarget(id string) (*connection.Target, error) {
 	// Check if this is a K8s target that needs a fresh port-forward
-	saved, ok := a.connections.GetSaved(id)
-	if ok && saved.IsK8s() {
-		return a.reconnectK8s(id, saved)
+	// Look in both saved and active (unreachable targets stay in active)
+	var target *connection.Target
+	if t, ok := a.connections.GetSaved(id); ok {
+		target = t
+	} else if t, ok := a.connections.Get(id); ok {
+		target = t
+	}
+
+	if target != nil && target.IsK8s() {
+		return a.reconnectK8s(id, target)
 	}
 	return a.connections.Reconnect(id)
 }

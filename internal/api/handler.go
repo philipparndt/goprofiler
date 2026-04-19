@@ -196,6 +196,28 @@ func (h *Handler) listSavedTargets(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) reconnectTarget(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	// Check if K8s target needing fresh port-forward
+	if h.k8sConfig != nil && h.k8sConfig.PortForwardMgr != nil {
+		var saved *connection.Target
+		if t, ok := h.connections.GetSaved(id); ok {
+			saved = t
+		}
+		if saved != nil && saved.IsK8s() {
+			h.k8sConfig.PortForwardMgr.Stop(id)
+			localPort, err := h.k8sConfig.PortForwardMgr.Start(saved.K8sContext, saved.K8sNamespace, saved.K8sPod, saved.K8sPort, id)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "port-forward: "+err.Error())
+				return
+			}
+			newURL := fmt.Sprintf("http://localhost:%d", localPort)
+			if saved.Language == connection.LangJava {
+				newURL = fmt.Sprintf("localhost:%d", localPort)
+			}
+			h.connections.UpdateURL(id, newURL)
+		}
+	}
+
 	target, err := h.connections.Reconnect(id)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
