@@ -4,6 +4,7 @@ import type { TraceData } from "../../api";
 interface Props {
   data: TraceData;
   onSelectGoroutine?: (id: number) => void;
+  onAiAnalyze?: (mode: string, extra?: Record<string, any>) => void;
 }
 
 interface SpanDetail {
@@ -224,7 +225,7 @@ function buildCompactLayout(
   return { segments, breaks };
 }
 
-export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
+export default function TraceTimeline({ data, onSelectGoroutine, onAiAnalyze }: Props) {
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
   // Compute total trace bounds
@@ -1073,9 +1074,39 @@ export default function TraceTimeline({ data, onSelectGoroutine }: Props) {
                 Reason: <span className="mono" style={{ color: "var(--text-primary)" }}>{selectedSpan.reason}</span>
               </span>
             )}
+            {onAiAnalyze && (
+              <>
+                <button
+                  className="btn-ai"
+                  style={{ marginLeft: "auto", padding: "2px 10px", fontSize: 11 }}
+                  onClick={() => {
+                    // Get adjacent spans for context
+                    const g = data.goroutines.find((g) => g.id === selectedSpan.goroutineId);
+                    const spanIdx = g?.spans.findIndex((s) => s.start === selectedSpan.startNs && s.end === selectedSpan.endNs) ?? -1;
+                    const adjacent = g?.spans.slice(Math.max(0, spanIdx - 2), spanIdx + 3).map((s) => ({
+                      state: s.state, start: s.start, end: s.end, reason: s.reason, stack: s.stack,
+                    })) || [];
+                    onAiAnalyze("trace-span", {
+                      span: { state: selectedSpan.state, start: selectedSpan.startNs, end: selectedSpan.endNs, reason: selectedSpan.reason, stack: selectedSpan.stack },
+                      goroutineName: selectedSpan.goroutineName,
+                      adjacentSpans: adjacent,
+                    });
+                  }}
+                >
+                  Explain Span
+                </button>
+                <button
+                  className="btn-ai"
+                  style={{ padding: "2px 10px", fontSize: 11 }}
+                  onClick={() => onAiAnalyze("trace-goroutine", { goroutineId: selectedSpan.goroutineId })}
+                >
+                  Explain Goroutine
+                </button>
+              </>
+            )}
             <button
               className="btn btn-secondary btn-sm"
-              style={{ marginLeft: "auto" }}
+              style={{ marginLeft: onAiAnalyze ? undefined : "auto" }}
               onClick={() => setSelectedSpan(null)}
             >
               ✕

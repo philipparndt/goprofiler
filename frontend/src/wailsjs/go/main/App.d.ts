@@ -75,6 +75,8 @@ export function StartAnalysis(arg1:main.AnalysisRequest):Promise<void>;
 
 export function StartProfile(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
+export function StartTraceAnalysis(arg1:main.TraceAnalysisRequest):Promise<void>;
+
 export function StopRecording(arg1:string):Promise<Record<string, string>>;
 
 export function UpdateLabel(arg1:string,arg2:string):Promise<void>;

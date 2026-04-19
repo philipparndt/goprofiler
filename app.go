@@ -835,6 +835,175 @@ func (a *App) CancelAnalysis() {
 	}
 }
 
+// --- Trace AI analysis bindings ---
+
+type TraceAnalysisRequest struct {
+	TargetURL   string             `json:"targetUrl"`
+	ProfileID   string             `json:"profileId"`
+	Mode        string             `json:"mode"` // trace-overview, trace-goroutine, trace-blocking, trace-span, trace-gc, trace-goroutines-tab, trace-blocking-tab
+	GoroutineID *uint64            `json:"goroutineId,omitempty"`
+	BlockingIdx *int               `json:"blockingIdx,omitempty"`
+	Span        *ai.GoroutineSpanInfo `json:"span,omitempty"`
+	GoroutineName string           `json:"goroutineName,omitempty"`
+	AdjacentSpans []ai.GoroutineSpanInfo `json:"adjacentSpans,omitempty"`
+}
+
+func (a *App) StartTraceAnalysis(req TraceAnalysisRequest) error {
+	// Get source directory
+	sourceDir := ""
+	for _, t := range a.connections.List() {
+		if t.URL == req.TargetURL {
+			sourceDir = t.SourceDir
+			break
+		}
+	}
+	if sourceDir == "" {
+		return fmt.Errorf("no source directory configured for this target")
+	}
+
+	// Load trace data
+	td, err := a.GetTraceData(req.ProfileID)
+	if err != nil {
+		return fmt.Errorf("load trace data: %w", err)
+	}
+
+	// Convert traceparser types to ai types
+	meta := ai.TraceMeta{
+		DurationNs:     td.Meta.DurationNs,
+		GoroutineCount: td.Meta.GoroutineCount,
+		ProcessorCount: td.Meta.ProcessorCount,
+		GCCount:        td.Meta.GCCount,
+	}
+
+	// Build prompt based on mode
+	var prompt string
+	switch req.Mode {
+	case "trace-overview":
+		goroutines := convertGoroutines(td)
+		blocking := convertBlocking(td)
+		gcEvents := convertGCEvents(td)
+		prompt = ai.BuildTraceOverviewPrompt(meta, goroutines, blocking, gcEvents)
+
+	case "trace-goroutine":
+		if req.GoroutineID == nil {
+			return fmt.Errorf("goroutineId required for trace-goroutine mode")
+		}
+		g := findGoroutine(td, *req.GoroutineID)
+		if g == nil {
+			return fmt.Errorf("goroutine %d not found", *req.GoroutineID)
+		}
+		prompt = ai.BuildTraceGoroutinePrompt(*g, meta)
+
+	case "trace-blocking":
+		if req.BlockingIdx == nil {
+			return fmt.Errorf("blockingIdx required for trace-blocking mode")
+		}
+		blocking := convertBlocking(td)
+		if *req.BlockingIdx >= len(blocking) {
+			return fmt.Errorf("blocking index out of range")
+		}
+		prompt = ai.BuildTraceBlockingPrompt(blocking[*req.BlockingIdx], blocking, meta)
+
+	case "trace-span":
+		if req.Span == nil {
+			return fmt.Errorf("span required for trace-span mode")
+		}
+		prompt = ai.BuildTraceSpanPrompt(*req.Span, req.GoroutineName, req.AdjacentSpans)
+
+	case "trace-gc":
+		gcEvents := convertGCEvents(td)
+		prompt = ai.BuildTraceGCPrompt(gcEvents, meta)
+
+	case "trace-goroutines-tab":
+		goroutines := convertGoroutines(td)
+		prompt = ai.BuildTraceGoroutinesTabPrompt(goroutines, meta)
+
+	case "trace-blocking-tab":
+		blocking := convertBlocking(td)
+		prompt = ai.BuildTraceBlockingTabPrompt(blocking, meta)
+
+	default:
+		return fmt.Errorf("unknown trace analysis mode: %s", req.Mode)
+	}
+
+	a.CancelAnalysis()
+	a.analysisSessionID = ""
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.analysisCancel = cancel
+
+	provider := ai.Provider(a.settings.Get().AIProvider)
+	events, err := ai.RunWithProvider(ctx, provider, sourceDir, prompt, "", ai.PermReadOnly)
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	go func() {
+		defer cancel()
+		for evt := range events {
+			if evt.SessionID != "" {
+				a.analysisSessionID = evt.SessionID
+			}
+			wailsRuntime.EventsEmit(a.ctx, "ai:event", evt)
+		}
+		wailsRuntime.EventsEmit(a.ctx, "ai:done", nil)
+	}()
+
+	return nil
+}
+
+func convertGoroutines(td *traceparser.TraceData) []ai.GoroutineInfo {
+	result := make([]ai.GoroutineInfo, len(td.Goroutines))
+	for i, g := range td.Goroutines {
+		spans := make([]ai.GoroutineSpanInfo, len(g.Spans))
+		for j, s := range g.Spans {
+			spans[j] = ai.GoroutineSpanInfo{
+				State: s.State, StartNs: s.StartNs, EndNs: s.EndNs,
+				Reason: s.Reason, Stack: s.Stack,
+			}
+		}
+		result[i] = ai.GoroutineInfo{ID: g.ID, Name: g.Name, Spans: spans}
+	}
+	return result
+}
+
+func convertBlocking(td *traceparser.TraceData) []ai.BlockingInfo {
+	result := make([]ai.BlockingInfo, len(td.BlockingSummary))
+	for i, b := range td.BlockingSummary {
+		result[i] = ai.BlockingInfo{
+			Location: b.Location, Category: b.Category,
+			TotalDuration: b.TotalDuration, Count: b.Count, Stack: b.Stack,
+		}
+	}
+	return result
+}
+
+func convertGCEvents(td *traceparser.TraceData) []ai.GCEventInfo {
+	result := make([]ai.GCEventInfo, len(td.GCEvents))
+	for i, e := range td.GCEvents {
+		result[i] = ai.GCEventInfo{StartNs: e.StartNs, EndNs: e.EndNs, PauseNs: e.PauseNs}
+	}
+	return result
+}
+
+func findGoroutine(td *traceparser.TraceData, id uint64) *ai.GoroutineInfo {
+	for _, g := range td.Goroutines {
+		if g.ID == id {
+			spans := make([]ai.GoroutineSpanInfo, len(g.Spans))
+			for j, s := range g.Spans {
+				spans[j] = ai.GoroutineSpanInfo{
+					State: s.State, StartNs: s.StartNs, EndNs: s.EndNs,
+					Reason: s.Reason, Stack: s.Stack,
+				}
+			}
+			result := ai.GoroutineInfo{ID: g.ID, Name: g.Name, Spans: spans}
+			return &result
+		}
+	}
+	return nil
+}
+
 // --- Source directory bindings ---
 
 func (a *App) BrowseSourceDir() (string, error) {

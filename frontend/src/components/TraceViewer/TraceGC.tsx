@@ -2,6 +2,7 @@ import type { TraceData } from "../../api";
 
 interface Props {
   data: TraceData;
+  onAiAnalyze?: (mode: string, extra?: Record<string, any>) => void;
 }
 
 function formatNs(ns: number): string {
@@ -17,7 +18,7 @@ function formatRelativeNs(ns: number, totalNs: number): string {
   return `${formatNs(ns)} (${((ns / totalNs) * 100).toFixed(2)}%)`;
 }
 
-export default function TraceGC({ data }: Props) {
+export default function TraceGC({ data, onAiAnalyze }: Props) {
   const gcEvents = data.gcEvents;
   const totalDurationNs = data.meta.durationNs;
 
@@ -40,6 +41,11 @@ export default function TraceGC({ data }: Props) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {onAiAnalyze && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button className="btn-ai" onClick={() => onAiAnalyze("trace-gc")}>Analyze GC</button>
+        </div>
+      )}
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
         {[

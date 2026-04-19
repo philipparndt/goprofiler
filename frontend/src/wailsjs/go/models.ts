@@ -20,6 +20,26 @@ export namespace ai {
 	        this.CumPct = source["CumPct"];
 	    }
 	}
+	export class GoroutineSpanInfo {
+	    state: string;
+	    start: number;
+	    end: number;
+	    reason?: string;
+	    stack?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GoroutineSpanInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.start = source["start"];
+	        this.end = source["end"];
+	        this.reason = source["reason"];
+	        this.stack = source["stack"];
+	    }
+	}
 
 }
 
@@ -158,6 +178,50 @@ export namespace main {
 	        this.label = source["label"];
 	        this.sourceDir = source["sourceDir"];
 	        this.profileCount = source["profileCount"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TraceAnalysisRequest {
+	    targetUrl: string;
+	    profileId: string;
+	    mode: string;
+	    goroutineId?: number;
+	    blockingIdx?: number;
+	    span?: ai.GoroutineSpanInfo;
+	    goroutineName?: string;
+	    adjacentSpans?: ai.GoroutineSpanInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TraceAnalysisRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.targetUrl = source["targetUrl"];
+	        this.profileId = source["profileId"];
+	        this.mode = source["mode"];
+	        this.goroutineId = source["goroutineId"];
+	        this.blockingIdx = source["blockingIdx"];
+	        this.span = this.convertValues(source["span"], ai.GoroutineSpanInfo);
+	        this.goroutineName = source["goroutineName"];
+	        this.adjacentSpans = this.convertValues(source["adjacentSpans"], ai.GoroutineSpanInfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

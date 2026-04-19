@@ -421,7 +421,7 @@ export default function ProfileViewer() {
               Download .trace ({formatTraceSize(profile.size)})
             </button>
           </div>
-          <TraceViewer profileId={profile.id} />
+          <TraceViewer profileId={profile.id} targetUrl={profile.targetURL} />
         </div>
       )}
 

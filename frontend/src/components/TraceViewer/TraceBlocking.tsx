@@ -3,6 +3,7 @@ import type { TraceData } from "../../api";
 
 interface Props {
   data: TraceData;
+  onAiAnalyze?: (mode: string, extra?: Record<string, any>) => void;
 }
 
 type Category = "channel" | "mutex" | "network" | "syscall" | "scheduler" | "other";
@@ -58,7 +59,7 @@ interface CategoryGroup {
   totalCount: number;
 }
 
-export default function TraceBlocking({ data }: Props) {
+export default function TraceBlocking({ data, onAiAnalyze }: Props) {
   const [expandedCategories, setExpandedCategories] = useState<Set<Category>>(new Set());
   const [expandedStacks, setExpandedStacks] = useState<Set<string>>(new Set());
 
@@ -121,8 +122,18 @@ export default function TraceBlocking({ data }: Props) {
     });
   };
 
+  // Find original index for a blocking entry
+  const findBlockingIdx = (location: string, category: string): number => {
+    return data.blockingSummary.findIndex((b) => b.location === location && b.category === category);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {onAiAnalyze && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button className="btn-ai" onClick={() => onAiAnalyze("trace-blocking-tab")}>Analyze Blocking</button>
+        </div>
+      )}
       {/* Summary bar */}
       <div className="card" style={{ padding: "12px 16px" }}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
@@ -288,6 +299,15 @@ export default function TraceBlocking({ data }: Props) {
                           <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", width: 70, textAlign: "right" }}>
                             avg {formatNs(entry.totalDuration / entry.count)}
                           </span>
+                          {onAiAnalyze && (
+                            <button
+                              className="btn-ai"
+                              style={{ padding: "2px 8px", fontSize: 10 }}
+                              onClick={(e) => { e.stopPropagation(); onAiAnalyze("trace-blocking", { blockingIdx: findBlockingIdx(entry.location, entry.category) }); }}
+                            >
+                              Explain
+                            </button>
+                          )}
                         </div>
                       </div>
 

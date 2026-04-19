@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { api } from "../../api";
+import { api, isWails } from "../../api";
 import type { TraceData } from "../../api";
 import TraceTimeline from "./TraceTimeline";
 import TraceGoroutines from "./TraceGoroutines";
 import TraceGC from "./TraceGC";
 import TraceBlocking from "./TraceBlocking";
+import AiAnalysisPanel from "../AiAnalysisPanel";
 
 interface Props {
   profileId: string;
+  targetUrl?: string;
 }
 
 type Tab = "timeline" | "goroutines" | "gc" | "blocking";
@@ -26,12 +28,36 @@ function formatNs(ns: number): string {
   return `${(ns / 1_000_000_000).toFixed(2)}s`;
 }
 
-export default function TraceViewer({ profileId }: Props) {
+export default function TraceViewer({ profileId, targetUrl }: Props) {
   const [data, setData] = useState<TraceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("timeline");
   const [selectedGoroutine, setSelectedGoroutine] = useState<number | null>(null);
+  const [aiPanelVisible, setAiPanelVisible] = useState(false);
+  const [aiError, setAiError] = useState<string | undefined>();
+  const [claudeAvailable, setClaudeAvailable] = useState(false);
+  const [permLevel, setPermLevel] = useState<"read-only" | "edit-files" | "full">("read-only");
+
+  useEffect(() => {
+    if (isWails()) api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
+  }, []);
+
+  const triggerTraceAi = async (mode: string, extra?: Record<string, any>) => {
+    setAiError(undefined);
+    setPermLevel("read-only");
+    setAiPanelVisible(true);
+    try {
+      await api.startTraceAnalysis({
+        targetUrl: targetUrl || "",
+        profileId,
+        mode: mode as any,
+        ...extra,
+      });
+    } catch (e: any) {
+      setAiError(e?.message || String(e));
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -247,6 +273,15 @@ export default function TraceViewer({ profileId }: Props) {
             )}
           </button>
         ))}
+        {isWails() && claudeAvailable && (
+          <button
+            className="btn-ai"
+            style={{ marginLeft: "auto", marginRight: 4 }}
+            onClick={() => triggerTraceAi("trace-overview")}
+          >
+            Analyze Trace
+          </button>
+        )}
       </div>
 
       {/* Tab content */}
@@ -261,6 +296,7 @@ export default function TraceViewer({ profileId }: Props) {
           <TraceTimeline
             data={data}
             onSelectGoroutine={handleSelectGoroutine}
+            onAiAnalyze={claudeAvailable ? triggerTraceAi : undefined}
           />
         )}
         {activeTab === "goroutines" && (
@@ -270,15 +306,31 @@ export default function TraceViewer({ profileId }: Props) {
               handleSelectGoroutine(id);
               setActiveTab("timeline");
             }}
+            onAiAnalyze={claudeAvailable ? triggerTraceAi : undefined}
           />
         )}
         {activeTab === "gc" && (
-          <TraceGC data={data} />
+          <TraceGC data={data} onAiAnalyze={claudeAvailable ? triggerTraceAi : undefined} />
         )}
         {activeTab === "blocking" && (
-          <TraceBlocking data={data} />
+          <TraceBlocking data={data} onAiAnalyze={claudeAvailable ? triggerTraceAi : undefined} />
         )}
       </div>
+      <AiAnalysisPanel
+        visible={aiPanelVisible}
+        onClose={() => { setAiPanelVisible(false); setAiError(undefined); }}
+        error={aiError}
+        permLevel={permLevel}
+        onPermLevelChange={setPermLevel}
+        onFollowUp={async (message) => {
+          setAiError(undefined);
+          try {
+            await api.followUpAnalysis({ targetUrl: targetUrl || "", message, permissionLevel: permLevel });
+          } catch (e: any) {
+            setAiError(e?.message || String(e));
+          }
+        }}
+      />
     </div>
   );
 }

@@ -142,6 +142,10 @@ export function StartProfile(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartProfile'](arg1, arg2, arg3);
 }
 
+export function StartTraceAnalysis(arg1) {
+  return window['go']['main']['App']['StartTraceAnalysis'](arg1);
+}
+
 export function StopRecording(arg1) {
   return window['go']['main']['App']['StopRecording'](arg1);
 }

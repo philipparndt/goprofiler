@@ -222,6 +222,9 @@ export const api = {
   cancelAnalysis: (): Promise<void> =>
     wailsCall("CancelAnalysis"),
 
+  startTraceAnalysis: (req: TraceAnalysisRequest): Promise<void> =>
+    wailsCall("StartTraceAnalysis", req),
+
   followUpAnalysis: (req: { targetUrl: string; message: string; permissionLevel?: string }): Promise<void> =>
     wailsCall("FollowUpAnalysis", req),
 
@@ -335,6 +338,17 @@ export interface AnalysisRequest {
   functionName?: string;
   functions?: AnalysisFunction[];
   permissionLevel?: "read-only" | "edit-files" | "full";
+}
+
+export interface TraceAnalysisRequest {
+  targetUrl: string;
+  profileId: string;
+  mode: "trace-overview" | "trace-goroutine" | "trace-blocking" | "trace-span" | "trace-gc" | "trace-goroutines-tab" | "trace-blocking-tab";
+  goroutineId?: number;
+  blockingIdx?: number;
+  span?: { state: string; start: number; end: number; reason?: string; stack?: string[] };
+  goroutineName?: string;
+  adjacentSpans?: { state: string; start: number; end: number; reason?: string; stack?: string[] }[];
 }
 
 export interface CpuDataPoint {

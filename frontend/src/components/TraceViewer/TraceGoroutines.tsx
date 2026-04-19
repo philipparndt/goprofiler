@@ -4,6 +4,7 @@ import type { TraceData } from "../../api";
 interface Props {
   data: TraceData;
   onSelectGoroutine?: (id: number) => void;
+  onAiAnalyze?: (mode: string, extra?: Record<string, any>) => void;
 }
 
 type SortKey = "id" | "name" | "running" | "runnable" | "blocked" | "syscall" | "waiting" | "transitions";
@@ -74,7 +75,7 @@ function MiniStackBar({ stats }: { stats: GoroutineStats }) {
   );
 }
 
-export default function TraceGoroutines({ data, onSelectGoroutine }: Props) {
+export default function TraceGoroutines({ data, onSelectGoroutine, onAiAnalyze }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("running");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [search, setSearch] = useState("");
@@ -150,14 +151,19 @@ export default function TraceGoroutines({ data, onSelectGoroutine }: Props) {
         ))}
       </div>
 
-      {/* Search */}
-      <input
-        className="input"
-        style={{ maxWidth: 280 }}
-        placeholder="Filter goroutines..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+      {/* Search + AI */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          className="input"
+          style={{ maxWidth: 280 }}
+          placeholder="Filter goroutines..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        {onAiAnalyze && (
+          <button className="btn-ai" onClick={() => onAiAnalyze("trace-goroutines-tab")}>Analyze Goroutines</button>
+        )}
+      </div>
 
       {/* Table */}
       <div className="card" style={{ padding: 0, overflow: "auto", maxHeight: "calc(100vh - 380px)" }}>
@@ -221,6 +227,17 @@ export default function TraceGoroutines({ data, onSelectGoroutine }: Props) {
                 <td className="mono" style={{ textAlign: "right" }}>
                   {s.transitions}
                 </td>
+                {onAiAnalyze && (
+                  <td>
+                    <button
+                      className="btn-ai"
+                      style={{ padding: "2px 8px", fontSize: 10 }}
+                      onClick={(e) => { e.stopPropagation(); onAiAnalyze("trace-goroutine", { goroutineId: s.id }); }}
+                    >
+                      Explain
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {sorted.length === 0 && (
