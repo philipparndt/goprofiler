@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 
@@ -18,6 +19,11 @@ type StreamEvent struct {
 	Error     string `json:"error,omitempty"`
 	Activity  string `json:"activity,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
+	// WorkingDir is the directory the analysis was spawned in. Claude stores
+	// conversations per-project, so `claude --resume <id>` only finds the
+	// session when run from the same directory — the UI needs this to build a
+	// working copy-paste command.
+	WorkingDir string `json:"workingDir,omitempty"`
 }
 
 func formatActivity(toolName string, input map[string]any) string {
@@ -70,24 +76,139 @@ const (
 	PermFull      PermissionLevel = "full"
 )
 
-// RunAnalysis spawns claude CLI with the given prompt and source directory.
-// If sessionID is provided, it resumes that session instead of starting a new one.
-func RunAnalysis(ctx context.Context, sourceDir, prompt, sessionID string, permLevel PermissionLevel) (<-chan StreamEvent, error) {
-	args := []string{}
-
-	if sessionID != "" {
-		args = append(args, "-p", prompt, "--resume", sessionID, "--output-format", "stream-json", "--verbose")
-	} else {
-		args = append(args, "-p", prompt, "--output-format", "stream-json", "--verbose")
-	}
-
-	switch permLevel {
+// permissionArgs returns the CLI flags that encode the given permission level.
+func permissionArgs(level PermissionLevel) []string {
+	switch level {
 	case PermEditFiles:
-		args = append(args, "--permission-mode", "acceptEdits")
+		return []string{"--permission-mode", "acceptEdits"}
 	case PermFull:
-		args = append(args, "--permission-mode", "bypassPermissions")
-	// PermReadOnly: default mode, no extra flags
+		return []string{"--permission-mode", "bypassPermissions"}
 	}
+	return nil
+}
+
+// parseClaudeStream reads line-delimited stream-json from r, translates each
+// line into a StreamEvent, and sends it on out. When sourceDir is non-empty it
+// is stamped as the WorkingDir on any event that carries a session ID so the
+// frontend can build a working `cd … && claude --resume …` command. The
+// function returns when ctx is cancelled, r reaches EOF, or the reader errors.
+// The caller is responsible for closing out.
+func parseClaudeStream(ctx context.Context, r io.Reader, sourceDir string, out chan<- StreamEvent) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		evt := StreamEvent{}
+
+		if t, ok := raw["type"].(string); ok {
+			evt.Type = t
+		}
+
+		// The init/system frame carries the session ID. Emit it so the UI can
+		// show a resume hint as soon as possible.
+		if evt.Type == "system" {
+			if sid, ok := raw["session_id"].(string); ok {
+				evt.SessionID = sid
+				if sourceDir != "" {
+					evt.WorkingDir = sourceDir
+				}
+				select {
+				case out <- evt:
+				case <-ctx.Done():
+					return
+				}
+			}
+			continue
+		}
+
+		// Extract text content and tool use from assistant messages.
+		if evt.Type == "assistant" {
+			if msg, ok := raw["message"].(map[string]any); ok {
+				if content, ok := msg["content"].([]any); ok {
+					var texts []string
+					var activities []string
+					for _, c := range content {
+						if block, ok := c.(map[string]any); ok {
+							if block["type"] == "text" {
+								if text, ok := block["text"].(string); ok {
+									texts = append(texts, text)
+								}
+							}
+							if block["type"] == "tool_use" {
+								name, _ := block["name"].(string)
+								input, _ := block["input"].(map[string]any)
+								activity := formatActivity(name, input)
+								if activity != "" {
+									activities = append(activities, activity)
+								}
+							}
+						}
+					}
+					evt.Content = strings.Join(texts, "")
+					evt.Activity = strings.Join(activities, ", ")
+				}
+			}
+		}
+
+		// The result frame is emitted at the end of a turn and carries the
+		// final assistant text plus the (potentially updated) session ID.
+		if evt.Type == "result" {
+			if result, ok := raw["result"].(string); ok {
+				evt.Content = result
+			}
+			if sid, ok := raw["session_id"].(string); ok {
+				evt.SessionID = sid
+				if sourceDir != "" {
+					evt.WorkingDir = sourceDir
+				}
+			}
+		}
+
+		if evt.Type == "error" {
+			if errMsg, ok := raw["error"].(string); ok {
+				evt.Error = errMsg
+			}
+		}
+
+		// Always forward `result` events (even without content) so downstream
+		// consumers can use them as end-of-turn markers. Drop purely empty
+		// non-result frames.
+		if evt.Type == "result" || evt.Content != "" || evt.Error != "" || evt.Activity != "" {
+			select {
+			case out <- evt:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// RunAnalysis spawns claude CLI one-shot with the given prompt and returns an
+// event channel that closes when the CLI exits. If sessionID is provided, it
+// resumes that session instead of starting a new one.
+//
+// This path is kept for the GitHub Copilot provider (dispatch lives in
+// provider.go) and as a fall-back when the installed Claude Code is too old to
+// support the streaming-input ClaudeSession path.
+func RunAnalysis(ctx context.Context, sourceDir, prompt, sessionID string, permLevel PermissionLevel) (<-chan StreamEvent, error) {
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+	if sessionID != "" {
+		args = []string{"-p", prompt, "--resume", sessionID, "--output-format", "stream-json", "--verbose"}
+	}
+	args = append(args, permissionArgs(permLevel)...)
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	if sourceDir != "" {
@@ -108,106 +229,21 @@ func RunAnalysis(ctx context.Context, sourceDir, prompt, sessionID string, permL
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			logger.Debug("claude stderr", "line", scanner.Text())
-		}
-	}()
+	go drainToLog(stderr, "claude stderr")
 
 	ch := make(chan StreamEvent, 64)
-
 	go func() {
 		defer close(ch)
 		defer cmd.Wait()
-
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-
-			var raw map[string]any
-			if err := json.Unmarshal([]byte(line), &raw); err != nil {
-				continue
-			}
-
-			evt := StreamEvent{}
-
-			if t, ok := raw["type"].(string); ok {
-				evt.Type = t
-			}
-
-			// Capture session ID from init event
-			if evt.Type == "system" {
-				if sid, ok := raw["session_id"].(string); ok {
-					evt.SessionID = sid
-					select {
-					case ch <- evt:
-					case <-ctx.Done():
-						return
-					}
-				}
-				continue
-			}
-
-			// Extract text content and tool use from assistant messages
-			if evt.Type == "assistant" {
-				if msg, ok := raw["message"].(map[string]any); ok {
-					if content, ok := msg["content"].([]any); ok {
-						var texts []string
-						var activities []string
-						for _, c := range content {
-							if block, ok := c.(map[string]any); ok {
-								if block["type"] == "text" {
-									if text, ok := block["text"].(string); ok {
-										texts = append(texts, text)
-									}
-								}
-								if block["type"] == "tool_use" {
-									name, _ := block["name"].(string)
-									input, _ := block["input"].(map[string]any)
-									activity := formatActivity(name, input)
-									if activity != "" {
-										activities = append(activities, activity)
-									}
-								}
-							}
-						}
-						evt.Content = strings.Join(texts, "")
-						evt.Activity = strings.Join(activities, ", ")
-					}
-				}
-			}
-
-			// Handle result type (final complete text)
-			if evt.Type == "result" {
-				if result, ok := raw["result"].(string); ok {
-					evt.Content = result
-				}
-				if sid, ok := raw["session_id"].(string); ok {
-					evt.SessionID = sid
-				}
-			}
-
-			if evt.Type == "error" {
-				if errMsg, ok := raw["error"].(string); ok {
-					evt.Error = errMsg
-				}
-			}
-
-			if evt.Content != "" || evt.Error != "" || evt.Activity != "" {
-				select {
-				case ch <- evt:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
+		parseClaudeStream(ctx, stdout, sourceDir, ch)
 	}()
 
 	return ch, nil
+}
+
+func drainToLog(r io.Reader, tag string) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		logger.Debug(tag, "line", scanner.Text())
+	}
 }

@@ -69,7 +69,7 @@ export default function ConnectionDetail() {
   useEffect(() => { loadTarget(); loadTags(); }, [id]);
   useEffect(() => {
     if (id) api.getProcessInfo(id).then(setProcessInfo).catch(() => {});
-    if (id && isWails()) api.getSourceDir(id).then(setSourceDir).catch(() => {});
+    if (id) api.getSourceDir(id).then(setSourceDir).catch(() => {});
   }, [id]);
   // Re-fetch target when connection state changes (e.g. reconnect from sidebar)
   useEffect(() => {
@@ -460,11 +460,6 @@ export default function ConnectionDetail() {
                 <button className="btn btn-secondary btn-sm" onClick={disconnect}>Disconnect</button>
               </>
             )}
-            {target.status === "saved" && (
-              <button className="btn btn-danger btn-sm" onClick={() => {
-                if (confirm("Remove this connection permanently?")) remove();
-              }}>Delete</button>
-            )}
           </div>
           <div style={{ marginTop: 12, display: "flex", gap: 16, fontSize: 13 }}>
             <span style={{ color: "var(--text-muted)" }}>Status: <strong style={{ color: target.status === "connected" ? "var(--success)" : target.status === "unreachable" ? "var(--danger)" : "var(--text-muted)" }}>{target.status}</strong></span>
@@ -472,19 +467,19 @@ export default function ConnectionDetail() {
           </div>
         </div>
 
-        {isWails() && (
-          <div className="card">
-            <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Source Directory</h3>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input
-                type="text"
-                value={sourceDir}
-                onChange={(e) => setSourceDir(e.target.value)}
-                onBlur={() => { if (id) api.setSourceDir(id, sourceDir).catch(() => {}); }}
-                placeholder="Path to Go source directory..."
-                className="input"
-                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
-              />
+        <div className="card">
+          <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Source Directory</h3>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="text"
+              value={sourceDir}
+              onChange={(e) => setSourceDir(e.target.value)}
+              onBlur={() => { if (id) api.setSourceDir(id, sourceDir).catch(() => {}); }}
+              placeholder="Path to source directory..."
+              className="input"
+              style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
+            />
+            {isWails() && (
               <button
                 className="btn btn-secondary btn-sm"
                 onClick={async () => {
@@ -499,10 +494,14 @@ export default function ConnectionDetail() {
               >
                 Browse
               </button>
-            </div>
-            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Used by AI analysis to read source code for flame graph explanations</p>
+            )}
           </div>
-        )}
+          <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+            {isWails()
+              ? "Used by AI analysis to read source code for flame graph explanations"
+              : "Absolute path on the server's filesystem, e.g. /Users/you/projects/myrepo. Used by AI analysis to read source code."}
+          </p>
+        </div>
         <div className="card">
           {processInfo ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>

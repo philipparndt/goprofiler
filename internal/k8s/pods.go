@@ -68,19 +68,20 @@ func ListPods(kubeconfigPath, contextName, namespace, search string) ([]PodInfo,
 			Language:  "unknown",
 		}
 
+		running := pod.Status.Phase == corev1.PodRunning
 		for _, c := range pod.Spec.Containers {
 			ci := ContainerInfo{
 				Name:  c.Name,
 				Image: c.Image,
 			}
 
-			// Detect language and profiling port
-			lang := detectLanguage(c)
-			if lang != "unknown" && info.Language == "unknown" {
-				info.Language = lang
+			if running {
+				lang := detectLanguage(c)
+				if lang != "unknown" && info.Language == "unknown" {
+					info.Language = lang
+				}
+				ci.ProfilingPort = detectProfilingPort(c, lang)
 			}
-
-			ci.ProfilingPort = detectProfilingPort(c, lang)
 			info.Containers = append(info.Containers, ci)
 		}
 
@@ -107,9 +108,10 @@ func detectLanguage(c corev1.Container) string {
 		}
 	}
 
-	// Go detection
+	// Go detection — only trust pprof-specific signals.
+	// "debug"-named ports are commonly Delve (port 2345), not pprof.
 	for _, port := range c.Ports {
-		if port.ContainerPort == 6060 || strings.Contains(strings.ToLower(port.Name), "pprof") || strings.Contains(strings.ToLower(port.Name), "debug") {
+		if port.ContainerPort == 6060 || strings.Contains(strings.ToLower(port.Name), "pprof") {
 			return "go"
 		}
 	}

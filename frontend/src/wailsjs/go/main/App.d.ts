@@ -3,9 +3,10 @@
 import {connection} from '../models';
 import {k8s} from '../models';
 import {java} from '../models';
-import {main} from '../models';
+import {ai} from '../models';
 import {traceparser} from '../models';
 import {storage} from '../models';
+import {main} from '../models';
 
 export function AddJavaTarget(arg1:string):Promise<connection.Target>;
 
@@ -45,9 +46,11 @@ export function EnableJavaMonitoring(arg1:string):Promise<Record<string, string>
 
 export function ExportProfileData(arg1:string):Promise<Array<number>>;
 
-export function FollowUpAnalysis(arg1:main.FollowUpRequest):Promise<void>;
+export function ExportProfileToFile(arg1:string):Promise<string>;
 
-export function GetAvailableAIProviders():Promise<Array<Record<string, any>>>;
+export function FollowUpAnalysis(arg1:ai.FollowUpRequest):Promise<void>;
+
+export function GetAvailableAIProviders():Promise<Array<ai.ProviderInfo>>;
 
 export function GetAvailableProfiles(arg1:string):Promise<any>;
 
@@ -89,6 +92,8 @@ export function ListTags():Promise<Array<string>>;
 
 export function ListTargets():Promise<Array<main.TargetWithCount>>;
 
+export function LogFrontend(arg1:string,arg2:string):Promise<void>;
+
 export function ReconnectTarget(arg1:string):Promise<connection.Target>;
 
 export function RefreshProfile(arg1:string):Promise<Record<string, any>>;
@@ -99,11 +104,11 @@ export function SetSourceDir(arg1:string,arg2:string):Promise<void>;
 
 export function SetTags(arg1:string,arg2:Array<string>):Promise<void>;
 
-export function StartAnalysis(arg1:main.AnalysisRequest):Promise<void>;
+export function StartAnalysis(arg1:ai.AnalysisRequest):Promise<void>;
 
 export function StartProfile(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function StartTraceAnalysis(arg1:main.TraceAnalysisRequest):Promise<void>;
+export function StartTraceAnalysis(arg1:ai.TraceAnalysisRequest):Promise<void>;
 
 export function StopRecording(arg1:string):Promise<Record<string, string>>;
 

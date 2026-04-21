@@ -21,6 +21,7 @@ import (
 	"github.com/philipparndt/goprofiler/internal/java"
 	"github.com/philipparndt/goprofiler/internal/k8s"
 	"github.com/philipparndt/goprofiler/internal/monitor"
+	"github.com/philipparndt/goprofiler/internal/settings"
 	"github.com/philipparndt/goprofiler/internal/storage"
 )
 
@@ -62,6 +63,12 @@ func main() {
 	javaMonitorSvc := java.NewJavaMonitorService()
 	defer javaMonitorSvc.Close()
 
+	settingsStore, err := settings.NewStore(configDir)
+	if err != nil {
+		logger.Error("failed to initialize settings store", "error", err)
+		os.Exit(1)
+	}
+
 	// Start monitoring for all currently active targets
 	for _, t := range connStore.List() {
 		if t.Language == connection.LangJava {
@@ -95,7 +102,7 @@ func main() {
 	portFwdMgr := k8s.NewPortForwardManager()
 	defer portFwdMgr.StopAll()
 
-	handler := api.NewHandler(connStore, store, monitorSvc, cpuMonitorSvc, javaMonitorSvc)
+	handler := api.NewHandler(connStore, store, monitorSvc, cpuMonitorSvc, javaMonitorSvc, settingsStore)
 	handler.SetK8sConfig(&api.K8sConfig{
 		PortForwardMgr: portFwdMgr,
 	})

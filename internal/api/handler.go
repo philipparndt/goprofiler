@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/philipparndt/go-logger"
 
+	"github.com/philipparndt/goprofiler/internal/ai"
 	"github.com/philipparndt/goprofiler/internal/connection"
 	"github.com/philipparndt/goprofiler/internal/k8s"
 	"github.com/philipparndt/goprofiler/internal/expvar"
@@ -22,6 +23,7 @@ import (
 	"github.com/philipparndt/goprofiler/internal/traceparser"
 	"github.com/philipparndt/goprofiler/internal/monitor"
 	"github.com/philipparndt/goprofiler/internal/profiler"
+	"github.com/philipparndt/goprofiler/internal/settings"
 	"github.com/philipparndt/goprofiler/internal/storage"
 )
 
@@ -40,6 +42,8 @@ type Handler struct {
 	monitor      *monitor.Service
 	cpuMonitor   *monitor.CpuService
 	javaMonitor  *java.JavaMonitorService
+	settings     *settings.Store
+	analysis     *ai.AnalysisService
 	k8sConfig    *K8sConfig
 
 	mu              sync.Mutex
@@ -48,18 +52,62 @@ type Handler struct {
 	traceCache      map[string]*traceparser.TraceData
 }
 
-func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service, cpuMonitorSvc *monitor.CpuService, javaMonitorSvc *java.JavaMonitorService) *Handler {
-	return &Handler{
+func NewHandler(connections *connection.Store, storage *storage.Store, monitorSvc *monitor.Service, cpuMonitorSvc *monitor.CpuService, javaMonitorSvc *java.JavaMonitorService, settingsStore *settings.Store) *Handler {
+	h := &Handler{
 		connections:     connections,
 		storage:         storage,
 		collector:       profiler.NewCollector(),
 		monitor:         monitorSvc,
 		cpuMonitor:      cpuMonitorSvc,
 		javaMonitor:     javaMonitorSvc,
+		settings:        settingsStore,
 		activeCancel:    make(map[string]context.CancelFunc),
 		activeRecording: make(map[string]*recordingState),
 		traceCache:      make(map[string]*traceparser.TraceData),
 	}
+	h.analysis = ai.NewAnalysisService(connections, settingsStore, handlerTraceLoader{h: h})
+	return h
+}
+
+// handlerTraceLoader adapts the Handler to ai.TraceDataLoader without a circular import.
+type handlerTraceLoader struct {
+	h *Handler
+}
+
+func (l handlerTraceLoader) LoadTraceData(profileID string) (*traceparser.TraceData, error) {
+	rec, err := l.h.storage.GetProfile(profileID)
+	if err != nil {
+		return nil, err
+	}
+	if rec.Type != "trace" && rec.Format != "jfr" {
+		return nil, fmt.Errorf("not a trace profile")
+	}
+	l.h.mu.Lock()
+	if cached, ok := l.h.traceCache[profileID]; ok {
+		l.h.mu.Unlock()
+		return cached, nil
+	}
+	l.h.mu.Unlock()
+
+	data, err := l.h.storage.GetProfileData(profileID)
+	if err != nil {
+		return nil, err
+	}
+
+	var td *traceparser.TraceData
+	if rec.Format == "jfr" {
+		td, err = java.ParseJFRThreads(data)
+	} else {
+		td, err = traceparser.ParseTrace(data)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parse trace: %w", err)
+	}
+
+	l.h.mu.Lock()
+	l.h.traceCache[profileID] = td
+	l.h.mu.Unlock()
+	return td, nil
 }
 
 func (h *Handler) SetK8sConfig(cfg *K8sConfig) {
@@ -86,10 +134,21 @@ func (h *Handler) Routes() chi.Router {
 		r.Get("/{id}/profiles/available", h.getAvailableProfiles)
 		r.Get("/{id}/goroutine-groups", h.getGoroutineGroups)
 		r.Get("/{id}/expvars", h.getExpvars)
+		r.Get("/{id}/source-dir", h.getSourceDir)
+		r.Put("/{id}/source-dir", h.setSourceDir)
 
 		r.Get("/saved", h.listSavedTargets)
 		r.Post("/saved/{id}/reconnect", h.reconnectTarget)
 		r.Delete("/saved/{id}", h.removeSavedTarget)
+	})
+
+	r.Route("/ai", func(r chi.Router) {
+		r.Get("/providers", h.aiProviders)
+		r.Post("/analyze", h.aiAnalyze)
+		r.Post("/trace-analyze", h.aiTraceAnalyze)
+		r.Post("/follow-up", h.aiFollowUp)
+		r.Post("/cancel", h.aiCancel)
+		r.Get("/stream/{streamId}", h.aiStream)
 	})
 
 	r.Route("/profiles", func(r chi.Router) {

@@ -1,4 +1,20 @@
+import { EventsOn } from "./wailsjs/runtime/runtime";
+
 const BASE = "/api";
+
+/**
+ * logFrontend mirrors a message into the Go logger so it lands in
+ * ~/.goprofiler/app.log alongside backend logs. In browser mode it just falls
+ * back to the console.
+ */
+export function logFrontend(level: "info" | "warn" | "error" | "debug", msg: string): void {
+  if (isWails()) {
+    try { wailsCall("LogFrontend", level, msg); } catch { /* ignore */ }
+  }
+  // Always mirror to the dev console too — harmless in production.
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+  fn(`[${level}] ${msg}`);
+}
 
 export type Language = "go" | "java";
 
@@ -209,15 +225,16 @@ export const api = {
 
   exportProfile: (id: string): void => {
     if (isWails()) {
-      wailsCall("ExportProfileData", id).then((data: number[]) => {
-        const blob = new Blob([new Uint8Array(data)]);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${id}.pb.gz`;
-        a.click();
-        URL.revokeObjectURL(url);
-      });
+      // Use the native SaveFileDialog: bypass the Blob + <a>.click() path,
+      // which is flaky inside WKWebView and hides errors with no devtools.
+      wailsCall("ExportProfileToFile", id)
+        .then((path: string) => {
+          if (path) logFrontend("info", `profile exported to ${path}`);
+        })
+        .catch((e: unknown) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          logFrontend("error", `exportProfile failed: ${msg}`);
+        });
     } else {
       window.open(`${BASE}/profiles/${id}/raw`, "_blank");
     }
@@ -240,28 +257,43 @@ export const api = {
     isWails() ? wailsCall("GetProcessInfo", targetId) : request<ProcessInfo>(`/targets/${targetId}/process-info`),
 
   getSourceDir: (targetId: string): Promise<string> =>
-    wailsCall("GetSourceDir", targetId),
+    isWails()
+      ? wailsCall("GetSourceDir", targetId)
+      : request<{ sourceDir: string }>(`/targets/${targetId}/source-dir`).then((r) => r.sourceDir),
 
   setSourceDir: (targetId: string, path: string): Promise<void> =>
-    wailsCall("SetSourceDir", targetId, path),
+    isWails()
+      ? wailsCall("SetSourceDir", targetId, path)
+      : request<void>(`/targets/${targetId}/source-dir`, { method: "PUT", body: JSON.stringify({ sourceDir: path }) }),
 
+  // Browse dialog only works in Wails — web mode intentionally has no HTTP
+  // endpoint for filesystem browsing; users paste the path instead.
   browseSourceDir: (): Promise<string> =>
     wailsCall("BrowseSourceDir"),
 
-  checkClaudeAvailable: (): Promise<boolean> =>
-    wailsCall("CheckClaudeAvailable"),
+  checkClaudeAvailable: async (): Promise<boolean> => {
+    if (isWails()) return wailsCall("CheckClaudeAvailable");
+    const providers = await api.getAvailableAIProviders();
+    return providers.some((p) => p.available);
+  },
 
-  startAnalysis: (req: AnalysisRequest): Promise<void> =>
-    wailsCall("StartAnalysis", req),
+  startAnalysis: (req: AnalysisRequest): Promise<{ streamId?: string }> =>
+    isWails()
+      ? wailsCall("StartAnalysis", req).then(() => ({}))
+      : request<{ streamId: string }>(`/ai/analyze`, { method: "POST", body: JSON.stringify(req) }),
 
   cancelAnalysis: (): Promise<void> =>
-    wailsCall("CancelAnalysis"),
+    isWails() ? wailsCall("CancelAnalysis") : request<void>(`/ai/cancel`, { method: "POST" }),
 
-  startTraceAnalysis: (req: TraceAnalysisRequest): Promise<void> =>
-    wailsCall("StartTraceAnalysis", req),
+  startTraceAnalysis: (req: TraceAnalysisRequest): Promise<{ streamId?: string }> =>
+    isWails()
+      ? wailsCall("StartTraceAnalysis", req).then(() => ({}))
+      : request<{ streamId: string }>(`/ai/trace-analyze`, { method: "POST", body: JSON.stringify(req) }),
 
-  followUpAnalysis: (req: { targetUrl: string; message: string; permissionLevel?: string }): Promise<void> =>
-    wailsCall("FollowUpAnalysis", req),
+  followUpAnalysis: (req: { targetUrl: string; message: string; permissionLevel?: string }): Promise<{ streamId?: string }> =>
+    isWails()
+      ? wailsCall("FollowUpAnalysis", req).then(() => ({}))
+      : request<{ streamId: string }>(`/ai/follow-up`, { method: "POST", body: JSON.stringify(req) }),
 
   getSettings: (): Promise<Record<string, string>> =>
     wailsCall("GetSettings"),
@@ -269,8 +301,10 @@ export const api = {
   updateSettings: (settings: Record<string, string>): Promise<void> =>
     wailsCall("UpdateSettings", settings),
 
-  getAvailableAIProviders: (): Promise<{ id: string; name: string; available: boolean }[]> =>
-    wailsCall("GetAvailableAIProviders"),
+  getAvailableAIProviders: (): Promise<{ id: string; name: string; available: boolean; active?: boolean }[]> =>
+    isWails()
+      ? wailsCall("GetAvailableAIProviders")
+      : request<{ id: string; name: string; available: boolean; active?: boolean }[]>(`/ai/providers`),
 
   getAvailableProfiles: (targetId: string): Promise<AvailableProfile[]> =>
     isWails() ? wailsCall("GetAvailableProfiles", targetId) : request<AvailableProfile[]>(`/targets/${targetId}/profiles/available`),
@@ -322,6 +356,47 @@ export const api = {
   disableCpuMonitoring: (targetId: string): Promise<{ status: string }> =>
     isWails() ? wailsCall("DisableCpuMonitoring", targetId) : request<{ status: string }>(`/targets/${targetId}/cpu/disable`, { method: "POST" }),
 };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AIEvent = any;
+
+/**
+ * subscribeAIEvents wires up an AI event stream for both runtimes. In Wails
+ * mode, `streamId` is ignored and events arrive via the global event bus. In
+ * web mode, a `streamId` must be passed and an EventSource is opened against
+ * `/api/ai/stream/{streamId}`. Returns a cleanup function that must be called
+ * when the consumer unmounts or switches streams.
+ */
+export function subscribeAIEvents(
+  streamId: string | undefined,
+  onEvent: (evt: AIEvent) => void,
+  onDone: () => void,
+): () => void {
+  if (isWails()) {
+    const offEvent = EventsOn("ai:event", onEvent);
+    const offDone = EventsOn("ai:done", onDone);
+    return () => { offEvent(); offDone(); };
+  }
+  if (!streamId) {
+    // No way to subscribe — return a no-op cleanup.
+    return () => {};
+  }
+  const es = new EventSource(`${BASE}/ai/stream/${encodeURIComponent(streamId)}`);
+  es.addEventListener("ai:event", (e) => {
+    try { onEvent(JSON.parse((e as MessageEvent).data)); } catch { /* ignore */ }
+  });
+  es.addEventListener("ai:done", () => {
+    onDone();
+    es.close();
+  });
+  es.onerror = () => {
+    // Browser will auto-reconnect; if the stream is gone, the server returns
+    // 404 and we fire onDone so the UI unblocks.
+    onDone();
+    es.close();
+  };
+  return () => es.close();
+}
 
 export interface TraceData {
   meta: { durationNs: number; goroutineCount: number; processorCount: number; gcCount: number };
@@ -386,7 +461,7 @@ export interface AnalysisRequest {
   profileType?: string;
   functionName?: string;
   functions?: AnalysisFunction[];
-  permissionLevel?: "read-only" | "edit-files" | "full";
+  permissionLevel?: "read-only" | "edit-files";
 }
 
 export interface TraceAnalysisRequest {

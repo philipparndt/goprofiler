@@ -1,7 +1,10 @@
 package main
 
 import (
+	"io"
 	"io/fs"
+	"os"
+	"path/filepath"
 
 	"github.com/philipparndt/go-logger"
 	"github.com/wailsapp/wails/v2"
@@ -14,6 +17,16 @@ import (
 
 func main() {
 	logger.Init("debug", logger.Logger())
+
+	// Production .app bundles on macOS discard stdout — mirror logs to a file
+	// so they can be inspected with `tail -f ~/.goprofiler/app.log`.
+	if home, err := os.UserHomeDir(); err == nil {
+		logDir := filepath.Join(home, ".goprofiler")
+		_ = os.MkdirAll(logDir, 0o755)
+		if f, err := os.OpenFile(filepath.Join(logDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			logger.LogTo(io.MultiWriter(os.Stdout, f))
+		}
+	}
 
 	app := NewApp()
 

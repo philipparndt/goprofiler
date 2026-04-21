@@ -52,8 +52,7 @@ type App struct {
 	activeRecording map[string]*recordingState
 	traceCache      map[string]*traceparser.TraceData
 
-	analysisCancel    context.CancelFunc
-	analysisSessionID string
+	analysis          *ai.AnalysisService
 	portForwardMgr    *k8s.PortForwardManager
 }
 
@@ -135,7 +134,18 @@ func (a *App) startup(ctx context.Context) {
 		return java.ValidateConnection(host, port)
 	}
 
+	a.analysis = ai.NewAnalysisService(connStore, settingsStore, appTraceLoader{app: a})
+
 	logger.Info("GoProfiler desktop started")
+}
+
+// appTraceLoader adapts App.GetTraceData to the ai.TraceDataLoader interface.
+type appTraceLoader struct {
+	app *App
+}
+
+func (l appTraceLoader) LoadTraceData(profileID string) (*traceparser.TraceData, error) {
+	return l.app.GetTraceData(profileID)
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -1015,345 +1025,49 @@ func (a *App) UpdateSettings(s map[string]string) {
 	a.settings.Update(current)
 }
 
-func (a *App) GetAvailableAIProviders() []map[string]any {
-	providers := []struct {
-		id, name string
-	}{
-		{"claude", "Claude Code"},
-		{"gh-copilot", "GitHub Copilot"},
-	}
-	var result []map[string]any
-	for _, p := range providers {
-		result = append(result, map[string]any{
-			"id":        p.id,
-			"name":      p.name,
-			"available": ai.CheckAvailable(ai.Provider(p.id)),
-		})
-	}
-	return result
+func (a *App) GetAvailableAIProviders() []ai.ProviderInfo {
+	return a.analysis.ListProviders()
 }
 
-type AnalysisRequest struct {
-	TargetID     string            `json:"targetId"`
-	ProfileID    string            `json:"profileId"`
-	Mode         string            `json:"mode"` // "explain", "optimize", "explain-function"
-	ProfileType  string            `json:"profileType,omitempty"`
-	FunctionName string            `json:"functionName,omitempty"`
-	Functions       []ai.FunctionInfo `json:"functions,omitempty"`
-	Format          string            `json:"format,omitempty"` // "pprof", "jfr"
-	PermissionLevel string            `json:"permissionLevel,omitempty"` // "read-only", "edit-files", "full"
-}
-
-func (a *App) StartAnalysis(req AnalysisRequest) error {
-	// Get source directory — try by target ID first, then search all targets by URL
-	sourceDir := ""
-	if req.TargetID != "" {
-		if target, ok := a.connections.Get(req.TargetID); ok {
-			sourceDir = target.SourceDir
-		} else {
-			// Search by URL in case targetId is actually a URL
-			for _, t := range a.connections.List() {
-				if t.URL == req.TargetID {
-					sourceDir = t.SourceDir
-					break
-				}
-			}
-		}
-	}
-
-	if sourceDir == "" {
-		return fmt.Errorf("no source directory configured for this target")
-	}
-
-	// Cancel any existing analysis
-	a.CancelAnalysis()
-
-	// Build prompt — use Java-specific prompts for JFR format
-	var prompt string
-	if req.Format == "jfr" {
-		switch req.Mode {
-		case "explain":
-			switch req.ProfileType {
-			case "heap", "allocs":
-				prompt = ai.BuildJavaAllocExplainPrompt(req.Functions, sourceDir)
-			case "lock", "mutex":
-				prompt = ai.BuildJavaLockExplainPrompt(req.Functions, sourceDir)
-			default:
-				prompt = ai.BuildJavaCPUExplainPrompt(req.Functions, sourceDir)
-			}
-		case "optimize":
-			prompt = ai.BuildJavaCPUExplainPrompt(req.Functions, sourceDir) // reuse with optimize framing
-		case "explain-function":
-			prompt = ai.BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType)
-		default:
-			return fmt.Errorf("unknown analysis mode: %s", req.Mode)
-		}
-	} else {
-		switch req.Mode {
-		case "explain":
-			prompt = ai.BuildExplainPrompt(req.Functions, sourceDir, req.ProfileType)
-		case "optimize":
-			prompt = ai.BuildOptimizePrompt(req.Functions, sourceDir, req.ProfileType)
-		case "explain-function":
-			prompt = ai.BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType)
-		default:
-			return fmt.Errorf("unknown analysis mode: %s", req.Mode)
-		}
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	a.analysisCancel = cancel
-
-	a.analysisSessionID = "" // new session
-	provider := ai.Provider(a.settings.Get().AIProvider)
-	permLevel := ai.PermissionLevel(req.PermissionLevel)
-	if permLevel == "" {
-		permLevel = ai.PermReadOnly
-	}
-	events, err := ai.RunWithProvider(ctx, provider, sourceDir, prompt, "", permLevel)
+func (a *App) StartAnalysis(req ai.AnalysisRequest) error {
+	_, events, err := a.analysis.StartAnalysis(req)
 	if err != nil {
-		cancel()
 		return err
 	}
-
-	// Stream events to frontend via Wails events, capture session ID
-	go func() {
-		defer cancel()
-		for evt := range events {
-			if evt.SessionID != "" {
-				a.analysisSessionID = evt.SessionID
-			}
-			wailsRuntime.EventsEmit(a.ctx, "ai:event", evt)
-		}
-		wailsRuntime.EventsEmit(a.ctx, "ai:done", nil)
-	}()
-
+	a.pumpToWailsBus(events)
 	return nil
 }
 
-type FollowUpRequest struct {
-	TargetURL       string `json:"targetUrl"`
-	Message         string `json:"message"`
-	PermissionLevel string `json:"permissionLevel,omitempty"`
-}
-
-func (a *App) FollowUpAnalysis(req FollowUpRequest) error {
-	a.CancelAnalysis()
-
-	// Look up source dir by target URL
-	sourceDir := ""
-	for _, t := range a.connections.List() {
-		if t.URL == req.TargetURL {
-			sourceDir = t.SourceDir
-			break
-		}
-	}
-	if sourceDir == "" {
-		return fmt.Errorf("no source directory configured for this target")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	a.analysisCancel = cancel
-
-	provider := ai.Provider(a.settings.Get().AIProvider)
-	// Resume the existing session if we have one
-	followPermLevel := ai.PermissionLevel(req.PermissionLevel)
-	if followPermLevel == "" {
-		followPermLevel = ai.PermReadOnly
-	}
-	events, err := ai.RunWithProvider(ctx, provider, sourceDir, req.Message, a.analysisSessionID, followPermLevel)
+func (a *App) FollowUpAnalysis(req ai.FollowUpRequest) error {
+	_, events, err := a.analysis.FollowUp(req)
 	if err != nil {
-		cancel()
 		return err
 	}
-
-	go func() {
-		defer cancel()
-		for evt := range events {
-			if evt.SessionID != "" {
-				a.analysisSessionID = evt.SessionID
-			}
-			wailsRuntime.EventsEmit(a.ctx, "ai:event", evt)
-		}
-		wailsRuntime.EventsEmit(a.ctx, "ai:done", nil)
-	}()
-
+	a.pumpToWailsBus(events)
 	return nil
 }
 
 func (a *App) CancelAnalysis() {
-	if a.analysisCancel != nil {
-		a.analysisCancel()
-		a.analysisCancel = nil
-	}
+	a.analysis.Cancel()
 }
 
-// --- Trace AI analysis bindings ---
-
-type TraceAnalysisRequest struct {
-	TargetURL   string             `json:"targetUrl"`
-	ProfileID   string             `json:"profileId"`
-	Mode        string             `json:"mode"` // trace-overview, trace-goroutine, trace-blocking, trace-span, trace-gc, trace-goroutines-tab, trace-blocking-tab
-	GoroutineID *uint64            `json:"goroutineId,omitempty"`
-	BlockingIdx *int               `json:"blockingIdx,omitempty"`
-	Span        *ai.GoroutineSpanInfo `json:"span,omitempty"`
-	GoroutineName string           `json:"goroutineName,omitempty"`
-	AdjacentSpans []ai.GoroutineSpanInfo `json:"adjacentSpans,omitempty"`
-}
-
-func (a *App) StartTraceAnalysis(req TraceAnalysisRequest) error {
-	// Get source directory
-	sourceDir := ""
-	for _, t := range a.connections.List() {
-		if t.URL == req.TargetURL {
-			sourceDir = t.SourceDir
-			break
-		}
-	}
-	if sourceDir == "" {
-		return fmt.Errorf("no source directory configured for this target")
-	}
-
-	// Load trace data
-	td, err := a.GetTraceData(req.ProfileID)
-	if err != nil {
-		return fmt.Errorf("load trace data: %w", err)
-	}
-
-	// Convert traceparser types to ai types
-	meta := ai.TraceMeta{
-		DurationNs:     td.Meta.DurationNs,
-		GoroutineCount: td.Meta.GoroutineCount,
-		ProcessorCount: td.Meta.ProcessorCount,
-		GCCount:        td.Meta.GCCount,
-	}
-
-	// Build prompt based on mode
-	var prompt string
-	switch req.Mode {
-	case "trace-overview":
-		goroutines := convertGoroutines(td)
-		blocking := convertBlocking(td)
-		gcEvents := convertGCEvents(td)
-		prompt = ai.BuildTraceOverviewPrompt(meta, goroutines, blocking, gcEvents)
-
-	case "trace-goroutine":
-		if req.GoroutineID == nil {
-			return fmt.Errorf("goroutineId required for trace-goroutine mode")
-		}
-		g := findGoroutine(td, *req.GoroutineID)
-		if g == nil {
-			return fmt.Errorf("goroutine %d not found", *req.GoroutineID)
-		}
-		prompt = ai.BuildTraceGoroutinePrompt(*g, meta)
-
-	case "trace-blocking":
-		if req.BlockingIdx == nil {
-			return fmt.Errorf("blockingIdx required for trace-blocking mode")
-		}
-		blocking := convertBlocking(td)
-		if *req.BlockingIdx >= len(blocking) {
-			return fmt.Errorf("blocking index out of range")
-		}
-		prompt = ai.BuildTraceBlockingPrompt(blocking[*req.BlockingIdx], blocking, meta)
-
-	case "trace-span":
-		if req.Span == nil {
-			return fmt.Errorf("span required for trace-span mode")
-		}
-		prompt = ai.BuildTraceSpanPrompt(*req.Span, req.GoroutineName, req.AdjacentSpans)
-
-	case "trace-gc":
-		gcEvents := convertGCEvents(td)
-		prompt = ai.BuildTraceGCPrompt(gcEvents, meta)
-
-	case "trace-goroutines-tab":
-		goroutines := convertGoroutines(td)
-		prompt = ai.BuildTraceGoroutinesTabPrompt(goroutines, meta)
-
-	case "trace-blocking-tab":
-		blocking := convertBlocking(td)
-		prompt = ai.BuildTraceBlockingTabPrompt(blocking, meta)
-
-	default:
-		return fmt.Errorf("unknown trace analysis mode: %s", req.Mode)
-	}
-
-	a.CancelAnalysis()
-	a.analysisSessionID = ""
-
-	ctx, cancel := context.WithCancel(context.Background())
-	a.analysisCancel = cancel
-
-	provider := ai.Provider(a.settings.Get().AIProvider)
-	events, err := ai.RunWithProvider(ctx, provider, sourceDir, prompt, "", ai.PermReadOnly)
-	if err != nil {
-		cancel()
-		return err
-	}
-
+func (a *App) pumpToWailsBus(events <-chan ai.StreamEvent) {
 	go func() {
-		defer cancel()
 		for evt := range events {
-			if evt.SessionID != "" {
-				a.analysisSessionID = evt.SessionID
-			}
 			wailsRuntime.EventsEmit(a.ctx, "ai:event", evt)
 		}
 		wailsRuntime.EventsEmit(a.ctx, "ai:done", nil)
 	}()
-
-	return nil
 }
 
-func convertGoroutines(td *traceparser.TraceData) []ai.GoroutineInfo {
-	result := make([]ai.GoroutineInfo, len(td.Goroutines))
-	for i, g := range td.Goroutines {
-		spans := make([]ai.GoroutineSpanInfo, len(g.Spans))
-		for j, s := range g.Spans {
-			spans[j] = ai.GoroutineSpanInfo{
-				State: s.State, StartNs: s.StartNs, EndNs: s.EndNs,
-				Reason: s.Reason, Stack: s.Stack,
-			}
-		}
-		result[i] = ai.GoroutineInfo{ID: g.ID, Name: g.Name, Spans: spans}
-	}
-	return result
-}
+// --- Trace AI analysis bindings ---
 
-func convertBlocking(td *traceparser.TraceData) []ai.BlockingInfo {
-	result := make([]ai.BlockingInfo, len(td.BlockingSummary))
-	for i, b := range td.BlockingSummary {
-		result[i] = ai.BlockingInfo{
-			Location: b.Location, Category: b.Category,
-			TotalDuration: b.TotalDuration, Count: b.Count, Stack: b.Stack,
-		}
+func (a *App) StartTraceAnalysis(req ai.TraceAnalysisRequest) error {
+	_, events, err := a.analysis.StartTraceAnalysis(req)
+	if err != nil {
+		return err
 	}
-	return result
-}
-
-func convertGCEvents(td *traceparser.TraceData) []ai.GCEventInfo {
-	result := make([]ai.GCEventInfo, len(td.GCEvents))
-	for i, e := range td.GCEvents {
-		result[i] = ai.GCEventInfo{StartNs: e.StartNs, EndNs: e.EndNs, PauseNs: e.PauseNs}
-	}
-	return result
-}
-
-func findGoroutine(td *traceparser.TraceData, id uint64) *ai.GoroutineInfo {
-	for _, g := range td.Goroutines {
-		if g.ID == id {
-			spans := make([]ai.GoroutineSpanInfo, len(g.Spans))
-			for j, s := range g.Spans {
-				spans[j] = ai.GoroutineSpanInfo{
-					State: s.State, StartNs: s.StartNs, EndNs: s.EndNs,
-					Reason: s.Reason, Stack: s.Stack,
-				}
-			}
-			result := ai.GoroutineInfo{ID: g.ID, Name: g.Name, Spans: spans}
-			return &result
-		}
-	}
+	a.pumpToWailsBus(events)
 	return nil
 }
 
@@ -1492,7 +1206,65 @@ func (a *App) GetAvailableProfiles(targetID string) (any, error) {
 }
 
 func (a *App) ExportProfileData(id string) ([]byte, error) {
-	return a.storage.GetProfileData(id)
+	data, err := a.storage.GetProfileData(id)
+	if err != nil {
+		logger.Error("ExportProfileData failed", "id", id, "error", err)
+		return nil, err
+	}
+	logger.Debug("ExportProfileData", "id", id, "bytes", len(data))
+	return data, nil
+}
+
+// ExportProfileToFile writes the profile data to a user-chosen path via the
+// native save dialog. This avoids the Blob + <a>.click() download path which
+// can be unreliable in the WKWebView used by Wails.
+func (a *App) ExportProfileToFile(id string) (string, error) {
+	data, err := a.storage.GetProfileData(id)
+	if err != nil {
+		logger.Error("ExportProfileToFile fetch failed", "id", id, "error", err)
+		return "", err
+	}
+
+	rec, err := a.storage.GetProfile(id)
+	ext := ".pb.gz"
+	if err == nil && rec.Type == "trace" {
+		ext = ".trace"
+	}
+
+	path, err := wailsRuntime.SaveFileDialog(a.ctx, wailsRuntime.SaveDialogOptions{
+		Title:           "Save profile",
+		DefaultFilename: id + ext,
+	})
+	if err != nil {
+		logger.Error("SaveFileDialog failed", "error", err)
+		return "", err
+	}
+	if path == "" {
+		// User canceled
+		return "", nil
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		logger.Error("write profile file failed", "path", path, "error", err)
+		return "", err
+	}
+	logger.Info("profile exported", "path", path, "bytes", len(data))
+	return path, nil
+}
+
+// LogFrontend lets the frontend write log lines to the same log sink the Go
+// side uses. Useful for debugging production Wails builds where the browser
+// DevTools are not available.
+func (a *App) LogFrontend(level, msg string) {
+	switch level {
+	case "error":
+		logger.Error("frontend: " + msg)
+	case "warn":
+		logger.Warn("frontend: " + msg)
+	case "debug":
+		logger.Debug("frontend: " + msg)
+	default:
+		logger.Info("frontend: " + msg)
+	}
 }
 
 // --- Helpers ---

@@ -24,26 +24,32 @@ SyntaxHighlighter.registerLanguage("json", json);
 SyntaxHighlighter.registerLanguage("yaml", yaml);
 SyntaxHighlighter.registerLanguage("yml", yaml);
 SyntaxHighlighter.registerLanguage("diff", diff);
-import { api } from "../api";
-import { EventsOn } from "../wailsjs/runtime/runtime";
-import { isWails } from "../api";
+import { api, subscribeAIEvents } from "../api";
 
 interface AiAnalysisPanelProps {
   visible: boolean;
   onClose: () => void;
   onFollowUp?: (message: string) => void;
-  permLevel: "read-only" | "edit-files" | "full";
-  onPermLevelChange: (v: "read-only" | "edit-files" | "full") => void;
+  permLevel: "read-only" | "edit-files";
+  onPermLevelChange: (v: "read-only" | "edit-files") => void;
   error?: string;
+  /** Stream ID returned from api.startAnalysis / follow-up in web mode. Ignored in Wails. */
+  streamId?: string;
 }
 
-export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLevel, onPermLevelChange, error }: AiAnalysisPanelProps) {
+export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLevel, onPermLevelChange, error, streamId }: AiAnalysisPanelProps) {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [activity, setActivity] = useState("");
   const [followUpInput, setFollowUpInput] = useState("");
   const [copied, setCopied] = useState(false);
   const [width, setWidth] = useState(520);
+  const [sessionId, setSessionId] = useState<string | undefined>();
+  const [workingDir, setWorkingDir] = useState<string | undefined>();
+  const [resumeCopyState, setResumeCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [provider, setProvider] = useState<string | undefined>();
+  const [collapsed, setCollapsed] = useState(false);
+  const [unread, setUnread] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const resizing = useRef(false);
 
@@ -53,34 +59,83 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
       setLoading(true);
       setActivity("");
       setCopied(false);
+      setSessionId(undefined);
+      setWorkingDir(undefined);
+      setResumeCopyState("idle");
+      setCollapsed(false);
+      setUnread(false);
     }
   }, [visible]);
 
+  // When the run state changes while the panel is collapsed, flag "unread" so
+  // the collapsed strip shows a dot and the user knows something happened.
   useEffect(() => {
-    if (!visible || !isWails()) return;
+    if (!collapsed) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!loading) setUnread(true);
+  }, [loading, collapsed]);
+  useEffect(() => {
+    if (!collapsed) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (error) setUnread(true);
+  }, [error, collapsed]);
 
-    const cleanupEvent = EventsOn("ai:event", (evt: any) => {
-      if (evt.activity) setActivity(evt.activity);
-      if (evt.type === "result" && evt.content) {
-        setContent(evt.content);
-        setActivity("");
-      } else if (evt.content) {
-        setContent((prev) => prev + evt.content);
-      }
-      if (evt.error) {
-        setContent((prev) => prev + "\n\n**Error:** " + evt.error);
+  // Expanding the panel clears the unread marker.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!collapsed) setUnread(false);
+  }, [collapsed]);
+
+  // Fetch the active provider once per panel open so we can decide whether to
+  // render a resume helper. `active` is set on the matching entry by the
+  // backend based on the selected AI provider in settings.
+  useEffect(() => {
+    if (!visible) return;
+    api.getAvailableAIProviders().then((ps) => {
+      const active = ps.find((p) => p.active)?.id ?? ps.find((p) => p.available)?.id;
+      setProvider(active);
+    }).catch(() => { /* ignore — provider stays undefined, no resume hint */ });
+  }, [visible]);
+
+  useEffect(() => {
+    if (resumeCopyState === "idle") return;
+    const t = setTimeout(() => setResumeCopyState("idle"), 1500);
+    return () => clearTimeout(t);
+  }, [resumeCopyState]);
+
+  useEffect(() => {
+    if (!visible) return;
+
+    const cleanup = subscribeAIEvents(
+      streamId,
+      (evt) => {
+        if (typeof evt.sessionId === "string" && evt.sessionId.length > 0) {
+          setSessionId(evt.sessionId);
+        }
+        if (typeof evt.workingDir === "string" && evt.workingDir.length > 0) {
+          setWorkingDir(evt.workingDir);
+        }
+        if (evt.activity) setActivity(evt.activity);
+        if (evt.type === "result" && evt.content) {
+          setContent(evt.content);
+          setActivity("");
+        } else if (evt.content) {
+          setContent((prev) => prev + evt.content);
+        }
+        if (evt.error) {
+          setContent((prev) => prev + "\n\n**Error:** " + evt.error);
+          setLoading(false);
+          setActivity("");
+        }
+      },
+      () => {
         setLoading(false);
         setActivity("");
-      }
-    });
+      },
+    );
 
-    const cleanupDone = EventsOn("ai:done", () => {
-      setLoading(false);
-      setActivity("");
-    });
-
-    return () => { cleanupEvent(); cleanupDone(); };
-  }, [visible]);
+    return cleanup;
+  }, [visible, streamId]);
 
   useEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = contentRef.current.scrollHeight;
@@ -127,6 +182,17 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
 
   if (!visible) return null;
 
+  if (collapsed) {
+    return (
+      <CollapsedStrip
+        loading={loading}
+        hasError={!!error}
+        unread={unread}
+        onExpand={() => setCollapsed(false)}
+      />
+    );
+  }
+
   let displayError: string | undefined;
   if (error) {
     displayError = error.includes("source directory")
@@ -167,12 +233,13 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        gap: 8,
         padding: "12px 16px",
         borderBottom: "1px solid var(--border)",
         flexShrink: 0,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>AI Analysis</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+          <span style={{ fontWeight: 600, fontSize: 14, flexShrink: 0 }}>AI Analysis</span>
           {loading && (
             <span style={{
               display: "inline-block",
@@ -180,10 +247,29 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
               borderRadius: "50%",
               background: "var(--success, #22c55e)",
               animation: "pulse 1.5s infinite",
+              flexShrink: 0,
             }} />
           )}
+          {sessionId && provider === "claude" && (
+            <ResumeCommandButton
+              sessionId={sessionId}
+              workingDir={workingDir}
+              copyState={resumeCopyState}
+              onCopy={async () => {
+                const cmd = workingDir
+                  ? `cd "${workingDir}" && claude --resume ${sessionId}`
+                  : `claude --resume ${sessionId}`;
+                try {
+                  await navigator.clipboard.writeText(cmd);
+                  setResumeCopyState("copied");
+                } catch {
+                  setResumeCopyState("failed");
+                }
+              }}
+            />
+          )}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
           {content && !loading && (
             <button className="btn btn-secondary btn-sm" onClick={handleCopyAll}>
               {copied ? "Copied!" : "Copy All"}
@@ -192,6 +278,14 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
           {loading && (
             <button className="btn btn-danger btn-sm" onClick={handleCancel}>Cancel</button>
           )}
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setCollapsed(true)}
+            title="Hide panel (AI keeps running in the background)"
+            aria-label="Hide panel (AI keeps running in the background)"
+          >
+            ‹
+          </button>
           <button className="btn btn-secondary btn-sm" onClick={() => { handleCancel(); setContent(""); onClose(); }}>Close</button>
         </div>
       </div>
@@ -280,13 +374,12 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
             <span style={{ color: "var(--text-muted)" }}>Permissions:</span>
             <select
               value={permLevel}
-              onChange={(e) => onPermLevelChange(e.target.value as any)}
+              onChange={(e) => onPermLevelChange(e.target.value as "read-only" | "edit-files")}
               className="input"
               style={{ fontSize: 11, padding: "2px 6px", width: "auto" }}
             >
               <option value="read-only">Read-only</option>
               <option value="edit-files">Allow edits</option>
-              <option value="full">Full (edits + commands)</option>
             </select>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -323,5 +416,137 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
         </div>
       )}
     </div>
+  );
+}
+
+function ResumeCommandButton({ sessionId, workingDir, copyState, onCopy }: {
+  sessionId: string;
+  workingDir: string | undefined;
+  copyState: "idle" | "copied" | "failed";
+  onCopy: () => void;
+}) {
+  const cmd = workingDir
+    ? `cd "${workingDir}" && claude --resume ${sessionId}`
+    : `claude --resume ${sessionId}`;
+  const label = copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Continue session in terminal";
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title={`Copies this command so you can continue the AI session in your own terminal:\n\n${cmd}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 11,
+        padding: "2px 8px",
+        background: copyState === "failed" ? "var(--warning)" : "var(--bg-secondary)",
+        color: "var(--text-primary)",
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+        cursor: "pointer",
+        flexShrink: 0,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <CopyIcon />
+      {label}
+    </button>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function CollapsedStrip({ loading, hasError, unread, onExpand }: {
+  loading: boolean;
+  hasError: boolean;
+  unread: boolean;
+  onExpand: () => void;
+}) {
+  const statusLabel = hasError ? "AI error" : loading ? "AI running" : "AI ready";
+  const ariaLabel = `Show AI panel (${hasError ? "error" : loading ? "running" : "ready"})`;
+  const dotColor = hasError ? "var(--danger, #ef4444)" : loading ? "var(--success, #22c55e)" : "var(--text-muted)";
+
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      style={{
+        position: "fixed",
+        top: 0,
+        right: 0,
+        width: 40,
+        height: "100vh",
+        background: "var(--bg-primary)",
+        borderLeft: "1px solid var(--border)",
+        borderTop: "none",
+        borderBottom: "none",
+        borderRight: "none",
+        padding: "12px 0",
+        cursor: "pointer",
+        zIndex: 100,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 10,
+        color: "var(--text-primary)",
+      }}
+    >
+      <span
+        style={{
+          display: "inline-block",
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: dotColor,
+          animation: loading ? "pulse 1.5s infinite" : undefined,
+          flexShrink: 0,
+        }}
+      />
+      {unread && (
+        <span
+          style={{
+            display: "inline-block",
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: "var(--accent, #8b5cf6)",
+            flexShrink: 0,
+          }}
+          aria-hidden="true"
+        />
+      )}
+      <span
+        style={{
+          writingMode: "vertical-rl",
+          transform: "rotate(180deg)",
+          fontSize: 11,
+          letterSpacing: "0.05em",
+          color: "var(--text-muted)",
+          userSelect: "none",
+        }}
+      >
+        {statusLabel}
+      </span>
+    </button>
   );
 }

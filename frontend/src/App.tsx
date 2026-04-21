@@ -83,7 +83,7 @@ function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="logo">
-          <img src="/logo.png" alt="GoProfiler" width="28" height="28" />
+          <img src="/logo.svg" alt="GoProfiler" width="28" height="28" />
           <span>GoProfiler</span>
         </div>
       </div>

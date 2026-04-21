@@ -43,6 +43,9 @@ public class JmxBridge {
                 case "threads":
                     bridge.threadDump();
                     break;
+                case "heap":
+                    bridge.heapHistogram();
+                    break;
                 case "jfr":
                     if (args.length < 4) {
                         System.err.println("Usage: jfr start|stop|dump <name> [file] [settings]");
@@ -270,6 +273,78 @@ public class JmxBridge {
         }
 
         sb.append("],\"deadlockCount\":").append(deadlocked.size()).append("}");
+        System.out.println(sb.toString());
+    }
+
+    void heapHistogram() throws Exception {
+        // Use DiagnosticCommandMBean to run GC.class_histogram (same as jcmd)
+        ObjectName diagCmd = new ObjectName("com.sun.management:type=DiagnosticCommand");
+        String result;
+        try {
+            result = (String) mbs.invoke(diagCmd, "gcClassHistogram",
+                new Object[]{new String[]{"-all"}},
+                new String[]{"[Ljava.lang.String;"});
+        } catch (Exception e) {
+            // Fallback: try without -all flag
+            try {
+                result = (String) mbs.invoke(diagCmd, "gcClassHistogram",
+                    new Object[]{new String[]{}},
+                    new String[]{"[Ljava.lang.String;"});
+            } catch (Exception e2) {
+                System.out.println("{\"error\":\"DiagnosticCommandMBean not available: " + escapeJson(e2.getMessage()) + "\"}");
+                return;
+            }
+        }
+
+        // Parse the class histogram output
+        // Format: "num  #instances  #bytes  class name\n  1:  12345  6789012  java.lang.String"
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"classes\":[");
+        long totalInstances = 0, totalBytes = 0;
+        boolean first = true;
+
+        for (String line : result.split("\n")) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("num") || line.startsWith("---")) continue;
+
+            if (line.startsWith("Total")) {
+                String[] fields = line.split("\\s+");
+                if (fields.length >= 3) {
+                    try { totalInstances = Long.parseLong(fields[1]); } catch (Exception ignored) {}
+                    try { totalBytes = Long.parseLong(fields[2]); } catch (Exception ignored) {}
+                }
+                continue;
+            }
+
+            // Parse "rank:  instances  bytes  className"
+            line = line.replace(":", " ");
+            String[] fields = line.split("\\s+");
+            if (fields.length < 4) continue;
+
+            try {
+                long instances = Long.parseLong(fields[1]);
+                long bytes = Long.parseLong(fields[2]);
+                String className = fields[3];
+
+                // Clean array notation
+                if (className.equals("[B")) className = "byte[]";
+                else if (className.equals("[C")) className = "char[]";
+                else if (className.equals("[I")) className = "int[]";
+                else if (className.equals("[J")) className = "long[]";
+                else if (className.equals("[D")) className = "double[]";
+                else if (className.startsWith("[L") && className.endsWith(";"))
+                    className = className.substring(2, className.length() - 1) + "[]";
+
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("{\"className\":\"").append(escapeJson(className)).append("\",");
+                sb.append("\"instances\":").append(instances).append(",");
+                sb.append("\"bytes\":").append(bytes).append("}");
+            } catch (NumberFormatException ignored) {}
+        }
+
+        sb.append("],\"totalInstances\":").append(totalInstances);
+        sb.append(",\"totalBytes\":").append(totalBytes).append("}");
         System.out.println(sb.toString());
     }
 

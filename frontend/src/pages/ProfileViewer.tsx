@@ -2,7 +2,6 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { ProfileDetail, CallTreeNode, TopFunction, FlameNode, AnalysisFunction } from "../api";
-import { isWails } from "../api";
 import AiAnalysisPanel from "../components/AiAnalysisPanel";
 import ContextMenu from "../components/ContextMenu";
 import flamegraph from "d3-flame-graph";
@@ -153,7 +152,8 @@ export default function ProfileViewer() {
   const [zoomedNode, setZoomedNode] = useState<FlameNode | null>(null);
   const [aiPanelVisible, setAiPanelVisible] = useState(false);
   const [aiError, setAiError] = useState<string | undefined>();
-  const [permLevel, setPermLevel] = useState<"read-only" | "edit-files" | "full">("read-only");
+  const [aiStreamId, setAiStreamId] = useState<string | undefined>();
+  const [permLevel, setPermLevel] = useState<"read-only" | "edit-files">("read-only");
   const [claudeAvailable, setClaudeAvailable] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; name: string } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
@@ -170,7 +170,7 @@ export default function ProfileViewer() {
 
   useEffect(() => { loadProfile(); setPrevHeapSummary(null); setRefreshDiff(null); setShowNewAllocs(false); }, [id]);
   useEffect(() => {
-    if (isWails()) api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
+    api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
   }, []);
 
   useEffect(() => { loadProfile(); }, [filterPprof, valueMode]);
@@ -500,7 +500,7 @@ export default function ProfileViewer() {
                   )}
                 </div>
               )}
-              {isWails() && claudeAvailable && (
+              {claudeAvailable && (
                 <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
                   <button
                     className="btn-ai"
@@ -511,7 +511,8 @@ export default function ProfileViewer() {
                       setPermLevel("read-only");
                       setAiPanelVisible(true);
                       try {
-                        await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                        setAiStreamId(r.streamId);
                       } catch (e: any) {
                         setAiError(e?.message || String(e));
                       }
@@ -528,7 +529,8 @@ export default function ProfileViewer() {
                       setPermLevel("read-only");
                       setAiPanelVisible(true);
                       try {
-                        await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                        setAiStreamId(r.streamId);
                       } catch (e: any) {
                         setAiError(e?.message || String(e));
                       }
@@ -538,7 +540,7 @@ export default function ProfileViewer() {
                   </button>
                 </div>
               )}
-              {isWails() && !claudeAvailable && (
+              {!claudeAvailable && (
                 <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }} title="Install an AI CLI to enable analysis">
                   AI: CLI not found
                 </span>
@@ -551,7 +553,7 @@ export default function ProfileViewer() {
               ref={chartRef}
               style={{ minHeight: 300 }}
               onContextMenu={(e) => {
-                if (!isWails() || !claudeAvailable) return;
+                if (!claudeAvailable) return;
                 const target = e.target as HTMLElement;
                 const label = target.closest(".d3-flame-graph-label") || target.closest("g");
                 if (!label) return;
@@ -599,14 +601,16 @@ export default function ProfileViewer() {
       </>}
       <AiAnalysisPanel
         visible={aiPanelVisible}
-        onClose={() => { setAiPanelVisible(false); setAiError(undefined); }}
+        onClose={() => { setAiPanelVisible(false); setAiError(undefined); setAiStreamId(undefined); }}
         error={aiError}
         permLevel={permLevel}
         onPermLevelChange={setPermLevel}
+        streamId={aiStreamId}
         onFollowUp={async (message) => {
           setAiError(undefined);
           try {
-            await api.followUpAnalysis({ targetUrl: profile?.targetURL || "", message, permissionLevel: permLevel });
+            const r = await api.followUpAnalysis({ targetUrl: profile?.targetURL || "", message, permissionLevel: permLevel });
+            setAiStreamId(r.streamId);
           } catch (e: any) {
             setAiError(e?.message || String(e));
           }
@@ -635,7 +639,7 @@ export default function ProfileViewer() {
               }
             }
             try {
-              await api.startAnalysis({
+              const r = await api.startAnalysis({
                 targetId: profile?.targetURL || "",
                 profileId: id || "",
                 mode: "explain-function",
@@ -644,6 +648,7 @@ export default function ProfileViewer() {
                 functions: subtreeFns,
                 permissionLevel: permLevel,
               });
+              setAiStreamId(r.streamId);
             } catch (e: any) {
               setAiError(e?.message || String(e));
             }

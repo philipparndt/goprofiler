@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "cp ../logo.png public/logo.png",
+    "prebuild": "cp ../logo.png public/logo.png && cp ../logo.svg public/logo.svg",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

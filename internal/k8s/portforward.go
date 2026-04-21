@@ -110,6 +110,9 @@ func (m *PortForwardManager) Start(contextName, namespace, podName string, remot
 		var lines []string
 		for scanner.Scan() {
 			line := scanner.Text()
+			if isBenignPortForwardError(line) {
+				continue
+			}
 			logger.Debug("kubectl port-forward stderr", "line", line)
 			lines = append(lines, line)
 		}
@@ -193,4 +196,20 @@ func (m *PortForwardManager) Get(targetID string) (*PortForwardInfo, bool) {
 	defer m.mu.RUnlock()
 	info, ok := m.forwards[targetID]
 	return info, ok
+}
+
+// isBenignPortForwardError returns true for the noisy-but-harmless stderr
+// lines kubectl emits whenever a short-lived forwarded connection is closed.
+// These happen on every expvar poll / health check and drown out real errors
+// in the log without carrying any actionable information.
+func isBenignPortForwardError(line string) bool {
+	if !strings.Contains(line, "portforward.go:") {
+		return false
+	}
+	if !strings.Contains(line, "Unhandled Error") {
+		return false
+	}
+	return strings.Contains(line, "broken pipe") ||
+		strings.Contains(line, "connection reset by peer") ||
+		strings.Contains(line, "use of closed network connection")
 }

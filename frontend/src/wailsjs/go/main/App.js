@@ -78,6 +78,10 @@ export function ExportProfileData(arg1) {
   return window['go']['main']['App']['ExportProfileData'](arg1);
 }
 
+export function ExportProfileToFile(arg1) {
+  return window['go']['main']['App']['ExportProfileToFile'](arg1);
+}
+
 export function FollowUpAnalysis(arg1) {
   return window['go']['main']['App']['FollowUpAnalysis'](arg1);
 }
@@ -164,6 +168,10 @@ export function ListTags() {
 
 export function ListTargets() {
   return window['go']['main']['App']['ListTargets']();
+}
+
+export function LogFrontend(arg1, arg2) {
+  return window['go']['main']['App']['LogFrontend'](arg1, arg2);
 }
 
 export function ReconnectTarget(arg1) {

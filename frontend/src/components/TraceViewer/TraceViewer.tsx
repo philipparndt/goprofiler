@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, isWails } from "../../api";
+import { api } from "../../api";
 import type { TraceData } from "../../api";
 import TraceTimeline from "./TraceTimeline";
 import TraceGoroutines from "./TraceGoroutines";
@@ -36,11 +36,12 @@ export default function TraceViewer({ profileId, targetUrl }: Props) {
   const [selectedGoroutine, setSelectedGoroutine] = useState<number | null>(null);
   const [aiPanelVisible, setAiPanelVisible] = useState(false);
   const [aiError, setAiError] = useState<string | undefined>();
+  const [aiStreamId, setAiStreamId] = useState<string | undefined>();
   const [claudeAvailable, setClaudeAvailable] = useState(false);
-  const [permLevel, setPermLevel] = useState<"read-only" | "edit-files" | "full">("read-only");
+  const [permLevel, setPermLevel] = useState<"read-only" | "edit-files">("read-only");
 
   useEffect(() => {
-    if (isWails()) api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
+    api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
   }, []);
 
   const triggerTraceAi = async (mode: string, extra?: Record<string, any>) => {
@@ -48,12 +49,13 @@ export default function TraceViewer({ profileId, targetUrl }: Props) {
     setPermLevel("read-only");
     setAiPanelVisible(true);
     try {
-      await api.startTraceAnalysis({
+      const r = await api.startTraceAnalysis({
         targetUrl: targetUrl || "",
         profileId,
         mode: mode as any,
         ...extra,
       });
+      setAiStreamId(r.streamId);
     } catch (e: any) {
       setAiError(e?.message || String(e));
     }
@@ -273,7 +275,7 @@ export default function TraceViewer({ profileId, targetUrl }: Props) {
             )}
           </button>
         ))}
-        {isWails() && claudeAvailable && (
+        {claudeAvailable && (
           <button
             className="btn-ai"
             style={{ marginLeft: "auto", marginRight: 4 }}
@@ -318,14 +320,16 @@ export default function TraceViewer({ profileId, targetUrl }: Props) {
       </div>
       <AiAnalysisPanel
         visible={aiPanelVisible}
-        onClose={() => { setAiPanelVisible(false); setAiError(undefined); }}
+        onClose={() => { setAiPanelVisible(false); setAiError(undefined); setAiStreamId(undefined); }}
         error={aiError}
         permLevel={permLevel}
         onPermLevelChange={setPermLevel}
+        streamId={aiStreamId}
         onFollowUp={async (message) => {
           setAiError(undefined);
           try {
-            await api.followUpAnalysis({ targetUrl: targetUrl || "", message, permissionLevel: permLevel });
+            const r = await api.followUpAnalysis({ targetUrl: targetUrl || "", message, permissionLevel: permLevel });
+            setAiStreamId(r.streamId);
           } catch (e: any) {
             setAiError(e?.message || String(e));
           }
