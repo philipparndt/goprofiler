@@ -6,7 +6,6 @@ import { refreshSidebar } from "../App";
 import LanguageBadge from "../components/LanguageBadge";
 import LocalJavaConnect from "../components/LocalJavaConnect";
 import K8sConnectWizard from "../components/K8sConnectWizard";
-import { isWails } from "../api";
 import type { Language } from "../api";
 
 export default function Connections() {
@@ -62,7 +61,7 @@ export default function Connections() {
           {([
             { id: "go-pprof" as const, label: "Go (pprof)", lang: "go" as Language | null },
             { id: "java-jmx" as const, label: "Java (JMX)", lang: "java" as Language | null },
-            ...(isWails() ? [{ id: "java-local" as const, label: "Local Java", lang: "java" as Language | null }] : []),
+            { id: "java-local" as const, label: "Local Java", lang: "java" as Language | null },
             { id: "k8s" as const, label: "Kubernetes", lang: null as Language | null },
           ]).map((opt) => (
             <button
@@ -74,6 +73,18 @@ export default function Connections() {
             </button>
           ))}
         </div>
+        {(connectionType === "java-jmx" || connectionType === "java-local") && (
+          <div style={{
+            fontSize: 12, color: "var(--warning, #f59e0b)", marginBottom: 12,
+            padding: "8px 12px", borderRadius: 6,
+            background: "rgba(245, 158, 11, 0.08)",
+            border: "1px solid rgba(245, 158, 11, 0.2)",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <span style={{ fontWeight: 700 }}>Experimental</span>
+            <span style={{ color: "var(--text-muted)" }}>Java support is in early development. Heap analysis, allocation tracking, and some monitoring features may show inaccurate data or be unavailable.</span>
+          </div>
+        )}
         {connectionType !== "java-local" && connectionType !== "k8s" && (
           <div style={{ display: "flex", gap: 8 }}>
             <input
@@ -113,7 +124,7 @@ export default function Connections() {
         <div style={{ marginBottom: 24 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Active</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
-            {targets.map((t) => (
+            {[...targets].sort((a, b) => (a.label || a.url).localeCompare(b.label || b.url)).map((t) => (
               <ConnectionCard key={t.id} target={t} />
             ))}
           </div>
@@ -124,7 +135,7 @@ export default function Connections() {
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "var(--text-secondary)" }}>Saved</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
-            {savedTargets.map((t) => (
+            {[...savedTargets].sort((a, b) => (a.label || a.url).localeCompare(b.label || b.url)).map((t) => (
               <ConnectionCard key={t.id} target={t} />
             ))}
           </div>

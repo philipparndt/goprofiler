@@ -119,7 +119,7 @@ func summarizeGC(events []GCEventInfo) string {
 
 func BuildTraceOverviewPrompt(meta TraceMeta, goroutines []GoroutineInfo, blocking []BlockingInfo, gcEvents []GCEventInfo) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing an execution trace. The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Trace duration: %s\n", fmtDuration(meta.DurationNs))
 	fmt.Fprintf(&sb, "Goroutines: %d, Processors: %d, GC events: %d\n\n", meta.GoroutineCount, meta.ProcessorCount, meta.GCCount)
 
@@ -152,7 +152,7 @@ func BuildTraceOverviewPrompt(meta TraceMeta, goroutines []GoroutineInfo, blocki
 
 func BuildTraceGoroutinePrompt(g GoroutineInfo, meta TraceMeta) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a specific goroutine from a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing a specific goroutine from an execution trace. The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Trace duration: %s, Total goroutines: %d\n\n", fmtDuration(meta.DurationNs), meta.GoroutineCount)
 
 	sb.WriteString("## Goroutine details:\n\n")
@@ -190,7 +190,7 @@ func BuildTraceGoroutinePrompt(g GoroutineInfo, meta TraceMeta) string {
 
 func BuildTraceBlockingPrompt(entry BlockingInfo, allBlocking []BlockingInfo, meta TraceMeta) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a blocking contention point from a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing a blocking contention point from an execution trace. The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Trace duration: %s\n\n", fmtDuration(meta.DurationNs))
 
 	sb.WriteString("## Selected blocking entry:\n\n")
@@ -220,7 +220,7 @@ func BuildTraceBlockingPrompt(entry BlockingInfo, allBlocking []BlockingInfo, me
 
 func BuildTraceSpanPrompt(span GoroutineSpanInfo, goroutineName string, adjacentSpans []GoroutineSpanInfo) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a specific goroutine state span from a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing a specific goroutine state span from an execution trace. The source code is in the current directory.\n\n")
 
 	fmt.Fprintf(&sb, "Goroutine: %s\n", goroutineName)
 	fmt.Fprintf(&sb, "State: %s\n", span.State)
@@ -258,7 +258,7 @@ func BuildTraceSpanPrompt(span GoroutineSpanInfo, goroutineName string, adjacent
 
 func BuildTraceGCPrompt(gcEvents []GCEventInfo, meta TraceMeta) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing garbage collection behavior from a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing garbage collection behavior from an execution trace. The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Trace duration: %s, Goroutines: %d\n\n", fmtDuration(meta.DurationNs), meta.GoroutineCount)
 
 	sb.WriteString("## GC events:\n\n")
@@ -288,7 +288,7 @@ func BuildTraceGCPrompt(gcEvents []GCEventInfo, meta TraceMeta) string {
 
 func BuildTraceGoroutinesTabPrompt(goroutines []GoroutineInfo, meta TraceMeta) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing goroutine behavior from a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing goroutine behavior from an execution trace. The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Trace duration: %s, Total goroutines: %d, Processors: %d\n\n", fmtDuration(meta.DurationNs), meta.GoroutineCount, meta.ProcessorCount)
 
 	sb.WriteString("## Goroutine summaries:\n\n")
@@ -313,7 +313,7 @@ func BuildTraceGoroutinesTabPrompt(goroutines []GoroutineInfo, meta TraceMeta) s
 
 func BuildTraceBlockingTabPrompt(blocking []BlockingInfo, meta TraceMeta) string {
 	var sb strings.Builder
-	sb.WriteString("You are analyzing blocking and contention from a Go execution trace. The source code is in the current directory.\n\n")
+	sb.WriteString("You are analyzing blocking and contention from an execution trace. The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Trace duration: %s, Goroutines: %d\n\n", fmtDuration(meta.DurationNs), meta.GoroutineCount)
 
 	sb.WriteString("## All blocking entries by category:\n\n")

@@ -1014,6 +1014,7 @@ func (a *App) GetSettings() map[string]string {
 	s := a.settings.Get()
 	return map[string]string{
 		"aiProvider": s.AIProvider,
+		"aiModel":    s.AIModel,
 	}
 }
 
@@ -1021,6 +1022,9 @@ func (a *App) UpdateSettings(s map[string]string) {
 	current := a.settings.Get()
 	if v, ok := s["aiProvider"]; ok {
 		current.AIProvider = v
+	}
+	if v, ok := s["aiModel"]; ok {
+		current.AIModel = v
 	}
 	a.settings.Update(current)
 }

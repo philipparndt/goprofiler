@@ -254,6 +254,35 @@ func CaptureThreadDumpViaBridge(jmxURL string) (*JmxThreadDump, error) {
 	return &dump, nil
 }
 
+// CaptureHeapHistogramViaBridge captures a heap class histogram via the JMX bridge.
+// Works for both local and remote JVMs (unlike jcmd which is local-only).
+func CaptureHeapHistogramViaBridge(jmxURL string) (*HeapHistogram, error) {
+	if !CheckJavaAvailable() {
+		return nil, fmt.Errorf("java not found in PATH")
+	}
+
+	jar := FindBridgeJar()
+	cmd := exec.Command("java", "-jar", jar, jmxURL, "heap")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("jmx bridge heap: %s: %w", string(out), err)
+	}
+
+	var hist HeapHistogram
+	if err := json.Unmarshal(out, &hist); err != nil {
+		return nil, fmt.Errorf("parse heap histogram: %w", err)
+	}
+
+	if hist.TotalBytes == 0 && len(hist.Classes) > 0 {
+		for _, c := range hist.Classes {
+			hist.TotalBytes += c.Bytes
+			hist.TotalInstances += c.Instances
+		}
+	}
+
+	return &hist, nil
+}
+
 // CollectJFRViaBridge starts a JFR recording via the JMX bridge, waits, then stops and returns the data.
 func CollectJFRViaBridge(ctx context.Context, jmxURL string, durationSec int, profileType JFRProfileType) ([]byte, error) {
 	if !CheckJavaAvailable() {

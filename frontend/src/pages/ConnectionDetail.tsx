@@ -686,6 +686,7 @@ function ProfilingControls({ targetId, language, onComplete }: { targetId: strin
               className={`btn btn-sm ${profileType === p.name ? "btn-primary" : "btn-secondary"}`}
               onClick={() => setProfileType(p.name as ProfileType)}
               disabled={profiling}
+              title={profileTip(p.name)}
             >{profileLabel(p.name)}</button>
           ))}
         </div>
@@ -706,6 +707,7 @@ function ProfilingControls({ targetId, language, onComplete }: { targetId: strin
               className={`btn btn-sm ${profileType === p.name ? "btn-primary" : "btn-secondary"}`}
               onClick={() => setProfileType(p.name as ProfileType)}
               disabled={profiling}
+              title={profileTip(p.name)}
             >{profileLabel(p.name)}</button>
           ))}
           <button
@@ -797,8 +799,21 @@ const PROFILE_LABELS: Record<string, string> = {
   block: "Block", mutex: "Mutex", allocs: "Allocs", threadcreate: "Threads",
   lock: "Lock",
 };
+const PROFILE_TIPS: Record<string, string> = {
+  cpu: "CPU time spent in each function",
+  trace: "Execution trace with goroutine/thread timeline",
+  heap: "Live objects currently on the heap (Go: inuse, Java: class histogram)",
+  allocs: "All allocations during the recording period (includes already GC'd objects)",
+  goroutine: "Goroutine stack traces and states",
+  block: "Time blocked on synchronization primitives",
+  mutex: "Mutex contention time",
+  lock: "Lock/monitor contention time (Java)",
+};
 function profileLabel(name: string): string {
   return PROFILE_LABELS[name] || name.charAt(0).toUpperCase() + name.slice(1);
+}
+function profileTip(name: string): string {
+  return PROFILE_TIPS[name] || "";
 }
 
 function formatBytes(bytes: number): string {

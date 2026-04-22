@@ -9,6 +9,7 @@ interface AIProvider {
 
 export default function Settings() {
   const [aiProvider, setAiProvider] = useState("claude");
+  const [aiModel, setAiModel] = useState("");
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [saved, setSaved] = useState(false);
 
@@ -16,6 +17,7 @@ export default function Settings() {
     if (!isWails()) return;
     api.getSettings().then((s) => {
       if (s.aiProvider) setAiProvider(s.aiProvider);
+      if (s.aiModel) setAiModel(s.aiModel);
     }).catch(() => {});
     api.getAvailableAIProviders().then(setProviders).catch(() => {});
   }, []);
@@ -97,6 +99,46 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      {/* Model selection (Claude only) */}
+      {aiProvider === "claude" && (
+        <div className="card">
+          <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>AI Model</h2>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 16 }}>
+            Choose which Claude model to use for analysis. Leave empty to use the CLI default.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[
+              { id: "", label: "Default", desc: "Use whatever the Claude CLI defaults to" },
+              { id: "sonnet", label: "Sonnet", desc: "Fast and capable — good for most analysis" },
+              { id: "opus", label: "Opus", desc: "Most capable — best for complex analysis" },
+              { id: "haiku", label: "Haiku", desc: "Fastest — good for quick explanations" },
+            ].map((m) => (
+              <label
+                key={m.id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "8px 12px", borderRadius: 6, cursor: "pointer",
+                  border: `1px solid ${aiModel === m.id ? "var(--accent, #8b5cf6)" : "var(--border)"}`,
+                  background: aiModel === m.id ? "rgba(139, 92, 246, 0.08)" : "transparent",
+                }}
+                onClick={async () => {
+                  setAiModel(m.id);
+                  await api.updateSettings({ aiModel: m.id });
+                  setSaved(true);
+                  setTimeout(() => setSaved(false), 2000);
+                }}
+              >
+                <input type="radio" name="aiModel" checked={aiModel === m.id} readOnly style={{ accentColor: "var(--accent, #8b5cf6)" }} />
+                <div>
+                  <div style={{ fontWeight: 500, fontSize: 14 }}>{m.label}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{m.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -26,10 +26,10 @@ func CheckAvailable(provider Provider) bool {
 	}
 }
 
-func RunWithProvider(ctx context.Context, provider Provider, sourceDir, prompt, sessionID string, permLevel PermissionLevel) (<-chan StreamEvent, error) {
+func RunWithProvider(ctx context.Context, provider Provider, sourceDir, prompt, sessionID string, permLevel PermissionLevel, model ...string) (<-chan StreamEvent, error) {
 	switch provider {
 	case ProviderClaude:
-		return RunAnalysis(ctx, sourceDir, prompt, sessionID, permLevel)
+		return RunAnalysis(ctx, sourceDir, prompt, sessionID, permLevel, model...)
 	case ProviderCopilot:
 		return runCopilot(ctx, sourceDir, prompt)
 	default:

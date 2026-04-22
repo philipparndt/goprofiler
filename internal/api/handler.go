@@ -173,6 +173,11 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/connect", h.connectK8sPod)
 	})
 
+	r.Route("/java/local", func(r chi.Router) {
+		r.Get("/discover", h.discoverLocalJVMs)
+		r.Post("/connect", h.connectLocalJVM)
+	})
+
 	return r
 }
 
@@ -631,20 +636,20 @@ func (h *Handler) startJavaProfile(w http.ResponseWriter, target *connection.Tar
 			writeJSON(w, http.StatusOK, rec)
 			return
 		}
-		// Remote: short JFR alloc recording (3s, synchronous)
+		// Remote: use bridge heap command (class histogram via JMX)
 		logger.Info("java heap via bridge", "url", target.URL)
-		data, err := java.CollectJFRViaBridge(context.Background(), target.URL, 3, java.JFRProfileAlloc)
+		hist, err := java.CaptureHeapHistogramViaBridge(target.URL)
 		if err != nil {
 			logger.Error("java heap via bridge failed", "error", err)
 			writeError(w, http.StatusBadGateway, "heap snapshot: "+err.Error())
 			return
 		}
-		logger.Info("java heap via bridge done", "bytes", len(data))
+		histJSON, _ := json.Marshal(hist)
 		rec := &storage.ProfileRecord{
 			ID: uuid.New().String(), TargetURL: target.URL,
-			Type: "heap", Format: "jfr", Timestamp: time.Now(), DurationSec: 3,
+			Type: "heap", Format: "java-heap-histogram", Timestamp: time.Now(),
 		}
-		if err := h.storage.SaveProfile(rec, data); err != nil {
+		if err := h.storage.SaveProfile(rec, histJSON); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1349,4 +1354,59 @@ func (h *Handler) connectK8sPod(w http.ResponseWriter, r *http.Request) {
 	h.connections.SetLabel(target.ID, req.Pod)
 
 	writeJSON(w, http.StatusOK, target)
+}
+
+// --- Local Java handlers ---
+
+func (h *Handler) discoverLocalJVMs(w http.ResponseWriter, r *http.Request) {
+	jvms, err := java.DiscoverLocalJVMs()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if jvms == nil {
+		jvms = []java.LocalJVM{}
+	}
+	writeJSON(w, http.StatusOK, jvms)
+}
+
+func (h *Handler) connectLocalJVM(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PID int `json:"pid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.PID <= 0 {
+		writeError(w, http.StatusBadRequest, "pid is required")
+		return
+	}
+
+	result, err := java.ConnectLocal(req.PID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	// Set PID on java monitor before connecting
+	if h.javaMonitor != nil {
+		h.javaMonitor.SetPid(result.URL, result.PID)
+	}
+
+	target, err := h.connections.ConnectJava(result.URL, "jmx")
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	h.connections.SetLocalPid(target.ID, result.PID, result.MainClass)
+	h.connections.SetLabel(target.ID, result.MainClass)
+
+	t, ok := h.connections.Get(target.ID)
+	if !ok {
+		writeJSON(w, http.StatusOK, target)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }

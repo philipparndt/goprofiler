@@ -49,7 +49,7 @@ type ClaudeSession struct {
 //
 // If the claude binary rejects the --input-format flag, the function returns
 // ErrSessionUnsupported and the caller should fall back to RunAnalysis.
-func StartClaudeSession(parent context.Context, sourceDir string, permLvl PermissionLevel) (*ClaudeSession, error) {
+func StartClaudeSession(parent context.Context, sourceDir string, permLvl PermissionLevel, model ...string) (*ClaudeSession, error) {
 	ctx, cancel := context.WithCancel(parent)
 
 	args := []string{
@@ -59,6 +59,9 @@ func StartClaudeSession(parent context.Context, sourceDir string, permLvl Permis
 		"--verbose",
 	}
 	args = append(args, permissionArgs(permLvl)...)
+	if len(model) > 0 && model[0] != "" {
+		args = append(args, "--model", model[0])
+	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	if sourceDir != "" {

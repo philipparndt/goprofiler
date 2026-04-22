@@ -11,6 +11,7 @@ import (
 
 type Settings struct {
 	AIProvider     string `json:"aiProvider"`               // "claude" or "gh-copilot"
+	AIModel        string `json:"aiModel,omitempty"`        // e.g. "sonnet", "opus", "haiku" — empty = CLI default
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"` // optional custom kubeconfig path
 }
 

@@ -203,12 +203,15 @@ func parseClaudeStream(ctx context.Context, r io.Reader, sourceDir string, out c
 // This path is kept for the GitHub Copilot provider (dispatch lives in
 // provider.go) and as a fall-back when the installed Claude Code is too old to
 // support the streaming-input ClaudeSession path.
-func RunAnalysis(ctx context.Context, sourceDir, prompt, sessionID string, permLevel PermissionLevel) (<-chan StreamEvent, error) {
+func RunAnalysis(ctx context.Context, sourceDir, prompt, sessionID string, permLevel PermissionLevel, model ...string) (<-chan StreamEvent, error) {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 	if sessionID != "" {
 		args = []string{"-p", prompt, "--resume", sessionID, "--output-format", "stream-json", "--verbose"}
 	}
 	args = append(args, permissionArgs(permLevel)...)
+	if len(model) > 0 && model[0] != "" {
+		args = append(args, "--model", model[0])
+	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	if sourceDir != "" {

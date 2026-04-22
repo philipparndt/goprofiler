@@ -280,20 +280,14 @@ public class JmxBridge {
         // Use DiagnosticCommandMBean to run GC.class_histogram (same as jcmd)
         ObjectName diagCmd = new ObjectName("com.sun.management:type=DiagnosticCommand");
         String result;
+        // Run without -all flag to get only live objects (after GC)
         try {
             result = (String) mbs.invoke(diagCmd, "gcClassHistogram",
-                new Object[]{new String[]{"-all"}},
+                new Object[]{new String[]{}},
                 new String[]{"[Ljava.lang.String;"});
         } catch (Exception e) {
-            // Fallback: try without -all flag
-            try {
-                result = (String) mbs.invoke(diagCmd, "gcClassHistogram",
-                    new Object[]{new String[]{}},
-                    new String[]{"[Ljava.lang.String;"});
-            } catch (Exception e2) {
-                System.out.println("{\"error\":\"DiagnosticCommandMBean not available: " + escapeJson(e2.getMessage()) + "\"}");
-                return;
-            }
+            System.out.println("{\"error\":\"DiagnosticCommandMBean not available: " + escapeJson(e.getMessage()) + "\"}");
+            return;
         }
 
         // Parse the class histogram output

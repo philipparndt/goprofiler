@@ -3,6 +3,7 @@ package java
 import (
 	"fmt"
 	"io"
+	"sort"
 
 	jfrparser "github.com/grafana/jfr-parser/parser"
 	"github.com/grafana/jfr-parser/parser/types"
@@ -19,14 +20,16 @@ const (
 )
 
 // ParseJFR parses a JFR recording and converts it to a flame graph result.
+type stackEntry struct {
+	stack []string
+	value int64
+}
+
 func ParseJFR(data []byte, profileType JFRProfileType) (*flamegraph.Result, error) {
 	p := jfrparser.NewParser(data, jfrparser.Options{SymbolProcessor: jfrparser.ProcessSymbols})
-
-	type stackEntry struct {
-		stack []string
-		value int64
-	}
 	var entries []stackEntry
+	var allocSamples []stackEntry // fallback for alloc when no TLAB events
+	hasTLAB := false
 
 	for {
 		typ, err := p.ParseEvent()
@@ -50,22 +53,21 @@ func ParseJFR(data []byte, profileType JFRProfileType) (*flamegraph.Result, erro
 				stack := resolveStack(p, p.ObjectAllocationInNewTLAB.StackTrace)
 				value := int64(p.ObjectAllocationInNewTLAB.TlabSize)
 				if len(stack) > 0 {
+					hasTLAB = true
 					entries = append(entries, stackEntry{stack: stack, value: value})
 				}
 			} else if typ == p.TypeMap.T_ALLOC_OUTSIDE_TLAB {
 				stack := resolveStack(p, p.ObjectAllocationOutsideTLAB.StackTrace)
 				value := int64(p.ObjectAllocationOutsideTLAB.AllocationSize)
 				if len(stack) > 0 {
+					hasTLAB = true
 					entries = append(entries, stackEntry{stack: stack, value: value})
 				}
 			} else if typ == p.TypeMap.T_ALLOC_SAMPLE {
 				stack := resolveStack(p, p.ObjectAllocationSample.StackTrace)
-				value := int64(p.ObjectAllocationSample.Weight)
-				if value == 0 {
-					value = 1 // count-based if no weight
-				}
+				weight := p.ObjectAllocationSample.Weight
 				if len(stack) > 0 {
-					entries = append(entries, stackEntry{stack: stack, value: value})
+					allocSamples = append(allocSamples, stackEntry{stack: stack, value: int64(weight)})
 				}
 			}
 		case JFRProfileLock:
@@ -83,6 +85,13 @@ func ParseJFR(data []byte, profileType JFRProfileType) (*flamegraph.Result, erro
 				}
 			}
 		}
+	}
+
+	// For alloc profiling: use TLAB events if available (reliable byte sizes).
+	// For ObjectAllocationSample (JDK 16+), the Weight field can have parser
+	// glitches producing extreme outliers. Cap at P95 to remove them.
+	if profileType == JFRProfileAlloc && !hasTLAB && len(allocSamples) > 0 {
+		entries = sanitizeAllocWeights(allocSamples)
 	}
 
 	// Build flame graph from collected stacks
@@ -158,6 +167,41 @@ func ParseJFR(data []byte, profileType JFRProfileType) (*flamegraph.Result, erro
 		FlameGraph:   root,
 		TopFunctions: topFuncs,
 	}, nil
+}
+
+// sanitizeAllocWeights removes extreme outliers from ObjectAllocationSample
+// weights. The Grafana JFR parser occasionally misinterprets fields, producing
+// values orders of magnitude larger than the rest. We cap at 10x the median.
+func sanitizeAllocWeights(samples []stackEntry) []stackEntry {
+	if len(samples) == 0 {
+		return samples
+	}
+
+	// Collect all weights and sort to find median
+	weights := make([]int64, len(samples))
+	for i, s := range samples {
+		weights[i] = s.value
+	}
+	sort.Slice(weights, func(i, j int) bool { return weights[i] < weights[j] })
+
+	median := weights[len(weights)/2]
+	if median <= 0 {
+		median = 1
+	}
+	cap := median * 10 // anything > 10x median is an outlier
+
+	result := make([]stackEntry, len(samples))
+	for i, s := range samples {
+		v := s.value
+		if v > cap {
+			v = cap // clamp to cap instead of discarding
+		}
+		if v <= 0 {
+			v = 1
+		}
+		result[i] = stackEntry{stack: s.stack, value: v}
+	}
+	return result
 }
 
 func resolveStack(p *jfrparser.Parser, ref types.StackTraceRef) []string {

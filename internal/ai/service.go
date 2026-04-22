@@ -261,8 +261,9 @@ func (s *AnalysisService) startFresh(sourceDir, prompt string, permLvl Permissio
 // startClaudeSession spawns a fresh ClaudeSession, wires a forwarder goroutine,
 // and sends the initial prompt. Returns the per-turn streamID and event channel.
 func (s *AnalysisService) startClaudeSession(sourceDir, prompt string, permLvl PermissionLevel) (string, <-chan StreamEvent, error) {
+	model := s.settings.Get().AIModel
 	ctx, cancel := context.WithCancel(context.Background())
-	session, err := StartClaudeSession(ctx, sourceDir, permLvl)
+	session, err := StartClaudeSession(ctx, sourceDir, permLvl, model)
 	if err != nil {
 		cancel()
 		return "", nil, err
@@ -507,11 +508,11 @@ func buildAnalysisPrompt(req AnalysisRequest, sourceDir string) (string, error) 
 	}
 	switch req.Mode {
 	case "explain":
-		return BuildExplainPrompt(req.Functions, sourceDir, req.ProfileType), nil
+		return BuildExplainPrompt(req.Functions, sourceDir, req.ProfileType, req.Format), nil
 	case "optimize":
-		return BuildOptimizePrompt(req.Functions, sourceDir, req.ProfileType), nil
+		return BuildOptimizePrompt(req.Functions, sourceDir, req.ProfileType, req.Format), nil
 	case "explain-function":
-		return BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType), nil
+		return BuildExplainFunctionPrompt(req.FunctionName, req.Functions, req.ProfileType, req.Format), nil
 	default:
 		return "", fmt.Errorf("unknown analysis mode: %s", req.Mode)
 	}

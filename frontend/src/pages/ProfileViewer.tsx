@@ -511,7 +511,7 @@ export default function ProfileViewer() {
                       setPermLevel("read-only");
                       setAiPanelVisible(true);
                       try {
-                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", format: (profile as any)?.format || "", functions: fns, permissionLevel: "read-only" });
                         setAiStreamId(r.streamId);
                       } catch (e: any) {
                         setAiError(e?.message || String(e));
@@ -529,7 +529,7 @@ export default function ProfileViewer() {
                       setPermLevel("read-only");
                       setAiPanelVisible(true);
                       try {
-                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", functions: fns, permissionLevel: "read-only" });
+                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", format: (profile as any)?.format || "", functions: fns, permissionLevel: "read-only" });
                         setAiStreamId(r.streamId);
                       } catch (e: any) {
                         setAiError(e?.message || String(e));
@@ -644,6 +644,7 @@ export default function ProfileViewer() {
                 profileId: id || "",
                 mode: "explain-function",
                 profileType: profile?.type || "",
+                format: (profile as any)?.format || "",
                 functionName: ctxMenu.name,
                 functions: subtreeFns,
                 permissionLevel: permLevel,

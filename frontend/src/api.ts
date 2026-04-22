@@ -130,10 +130,10 @@ export const api = {
     wailsCall("AddJavaTarget", address),
 
   discoverLocalJVMs: (): Promise<{ pid: number; mainClass: string; args?: string; jmxPort?: number; asprofAvailable?: boolean }[]> =>
-    wailsCall("DiscoverLocalJVMs"),
+    isWails() ? wailsCall("DiscoverLocalJVMs") : request(`/java/local/discover`),
 
   connectLocalJVM: (pid: number): Promise<Target> =>
-    wailsCall("ConnectLocalJVM", pid),
+    isWails() ? wailsCall("ConnectLocalJVM", pid) : request(`/java/local/connect`, { method: "POST", body: JSON.stringify({ pid }) }),
 
   discoverK8s: (context?: string, namespace?: string, search?: string): Promise<{
     currentContext: string;
@@ -459,6 +459,7 @@ export interface AnalysisRequest {
   profileId: string;
   mode: "explain" | "optimize" | "explain-function";
   profileType?: string;
+  format?: string; // "pprof", "jfr", "java-heap-histogram"
   functionName?: string;
   functions?: AnalysisFunction[];
   permissionLevel?: "read-only" | "edit-files";

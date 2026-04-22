@@ -13,6 +13,13 @@ type FunctionInfo struct {
 	CumPct  float64
 }
 
+func languageName(format string) string {
+	if format == "jfr" || format == "java-heap-histogram" {
+		return "Java"
+	}
+	return "Go"
+}
+
 func profileTypeDescription(profileType string) string {
 	switch profileType {
 	case "cpu":
@@ -44,9 +51,13 @@ func formatFunctionList(functions []FunctionInfo, limit int) string {
 	return sb.String()
 }
 
-func BuildExplainPrompt(functions []FunctionInfo, sourceDir, profileType string) string {
+func BuildExplainPrompt(functions []FunctionInfo, sourceDir, profileType string, format ...string) string {
+	lang := "Go"
+	if len(format) > 0 {
+		lang = languageName(format[0])
+	}
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a Go application's performance profile. ")
+	fmt.Fprintf(&sb, "You are analyzing a %s application's performance profile. ", lang)
 	sb.WriteString("The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Profile type: %s\n\n", profileTypeDescription(profileType))
 	sb.WriteString("Here are the top hot functions from the profile (sorted by cumulative cost):\n\n")
@@ -60,9 +71,13 @@ func BuildExplainPrompt(functions []FunctionInfo, sourceDir, profileType string)
 	return sb.String()
 }
 
-func BuildOptimizePrompt(functions []FunctionInfo, sourceDir, profileType string) string {
+func BuildOptimizePrompt(functions []FunctionInfo, sourceDir, profileType string, format ...string) string {
+	lang := "Go"
+	if len(format) > 0 {
+		lang = languageName(format[0])
+	}
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a Go application's performance profile to suggest optimizations. ")
+	fmt.Fprintf(&sb, "You are analyzing a %s application's performance profile to suggest optimizations. ", lang)
 	sb.WriteString("The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Profile type: %s\n\n", profileTypeDescription(profileType))
 	sb.WriteString("Here are the top hot functions from the profile:\n\n")
@@ -77,9 +92,13 @@ func BuildOptimizePrompt(functions []FunctionInfo, sourceDir, profileType string
 	return sb.String()
 }
 
-func BuildExplainFunctionPrompt(functionName string, subtreeFunctions []FunctionInfo, profileType string) string {
+func BuildExplainFunctionPrompt(functionName string, subtreeFunctions []FunctionInfo, profileType string, format ...string) string {
+	lang := "Go"
+	if len(format) > 0 {
+		lang = languageName(format[0])
+	}
 	var sb strings.Builder
-	sb.WriteString("You are analyzing a Go application's performance profile. ")
+	fmt.Fprintf(&sb, "You are analyzing a %s application's performance profile. ", lang)
 	sb.WriteString("The source code is in the current directory.\n\n")
 	fmt.Fprintf(&sb, "Profile type: %s\n\n", profileTypeDescription(profileType))
 	fmt.Fprintf(&sb, "The user selected this function in the flame graph: **%s**\n\n", functionName)
