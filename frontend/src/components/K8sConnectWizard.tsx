@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../api";
 import LanguageBadge from "./LanguageBadge";
 import type { Language } from "../api";
@@ -21,14 +21,24 @@ export default function K8sConnectWizard({ onConnected }: Props) {
   const [search, setSearch] = useState("");
   const [langFilter, setLangFilter] = useState<"all" | "go" | "java" | "unknown">("go");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState("");
+  // `data` via a ref so discover() can tell whether it's the initial fetch
+  // (loading=true, big spinner) or a subsequent refresh (refreshing=true,
+  // inline spinner) without re-creating the callback on every state change.
+  const hasDataRef = useRef(false);
   const discover = useCallback(async (ctx?: string, ns?: string, q?: string) => {
-    setLoading(true);
+    if (hasDataRef.current) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError("");
     try {
       const result = await api.discoverK8s(ctx || selectedCtx, ns ?? selectedNs, q ?? search);
       setData(result);
+      hasDataRef.current = true;
       if (!ctx && !selectedCtx && result.currentContext) {
         setSelectedCtx(result.currentContext);
       }
@@ -36,6 +46,7 @@ export default function K8sConnectWizard({ onConnected }: Props) {
       setError(e.message || "Failed to connect to Kubernetes. Is kubectl configured?");
     }
     setLoading(false);
+    setRefreshing(false);
   }, [selectedCtx, selectedNs, search]);
 
   // Initial load
@@ -112,6 +123,8 @@ export default function K8sConnectWizard({ onConnected }: Props) {
               value={selectedCtx || data.currentContext}
               options={data.contexts.map((c) => ({ value: c.name, label: c.name + (c.isCurrent ? " (current)" : "") }))}
               onChange={changeContext}
+              searchable
+              searchPlaceholder="Filter contexts…"
             />
           </div>
         )}
@@ -123,6 +136,8 @@ export default function K8sConnectWizard({ onConnected }: Props) {
             value={selectedNs}
             options={[{ value: "", label: "All namespaces" }, ...data.namespaces.map((ns) => ({ value: ns, label: ns }))]}
             onChange={changeNamespace}
+            searchable
+            searchPlaceholder="Filter namespaces…"
           />
         </div>
 
@@ -135,8 +150,8 @@ export default function K8sConnectWizard({ onConnected }: Props) {
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && doSearch()}
         />
-        <button className="btn btn-secondary btn-sm" onClick={doSearch} disabled={loading}>
-          {loading ? "..." : "Refresh"}
+        <button className="btn btn-secondary btn-sm" onClick={doSearch} disabled={loading || refreshing}>
+          {loading || refreshing ? "..." : "Refresh"}
         </button>
       </div>
 
@@ -157,7 +172,22 @@ export default function K8sConnectWizard({ onConnected }: Props) {
         </span>
       </div>
 
-      {/* Pod list */}
+      {/* Pod list — swapped for an inline spinner while refreshing after a
+          context or namespace change. The big "Connecting to Kubernetes…"
+          spinner above is reserved for the first mount. */}
+      {refreshing ? (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, padding: 24,
+          color: "var(--text-muted)", fontSize: 13, justifyContent: "center",
+        }}>
+          <span style={{
+            display: "inline-block", width: 16, height: 16, boxSizing: "border-box",
+            border: "2px solid var(--border)", borderTopColor: "var(--accent, #8b5cf6)",
+            borderRadius: "50%", animation: "spin 0.8s linear infinite",
+          }} />
+          Loading from cluster…
+        </div>
+      ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 400, overflow: "auto" }}>
         {filteredPods.map((pod) => {
           const port = pod.containers?.[0]?.profilingPort;
@@ -199,18 +229,49 @@ export default function K8sConnectWizard({ onConnected }: Props) {
           </span>
         )}
       </div>
+      )}
     </div>
   );
 }
 
-// Reusable custom dropdown
-function CustomDropdown({ value, options, onChange }: {
+// Reusable custom dropdown with optional typeahead filter.
+function CustomDropdown({ value, options, onChange, searchable, searchThreshold, searchPlaceholder }: {
   value: string;
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
+  searchable?: boolean;
+  searchThreshold?: number;
+  searchPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const selected = options.find((o) => o.value === value);
+
+  const showSearch = !!searchable && options.length >= (searchThreshold ?? 6);
+
+  // Reset the query and auto-focus the search input each time the popover
+  // opens. Reopening with a stale filter would confuse the user.
+  useEffect(() => {
+    if (!open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setQuery("");
+    if (showSearch) {
+      // Defer focus until the input is actually in the DOM.
+      const t = setTimeout(() => searchRef.current?.focus(), 0);
+      return () => clearTimeout(t);
+    }
+  }, [open, showSearch]);
+
+  const needle = query.trim().toLowerCase();
+  const matches = needle
+    ? options.filter((o) => o.label.toLowerCase().includes(needle))
+    : options;
+  // Pin the current selection on top if it would otherwise be filtered out,
+  // so the user doesn't lose sight of their current pick while typing.
+  const pinnedSelected = selected && needle && !matches.some((m) => m.value === selected.value)
+    ? selected
+    : undefined;
 
   return (
     <div style={{ position: "relative" }}>
@@ -231,29 +292,72 @@ function CustomDropdown({ value, options, onChange }: {
           <div style={{
             position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 100,
             background: "var(--bg-surface, #1a1a2e)", border: "1px solid var(--border)",
-            borderRadius: 6, padding: 4, minWidth: 180, maxHeight: 240, overflowY: "auto",
+            borderRadius: 6, padding: 4, minWidth: 220, maxHeight: 320, overflowY: "auto",
             boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+            display: "flex", flexDirection: "column",
           }}>
-            {options.map((opt) => (
-              <button
-                key={opt.value}
+            {showSearch && (
+              <input
+                ref={searchRef}
+                type="text"
+                className="input"
+                placeholder={searchPlaceholder ?? "Filter…"}
+                aria-label={searchPlaceholder ?? "Filter"}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
                 style={{
-                  display: "block", width: "100%", textAlign: "left",
-                  padding: "6px 10px", fontSize: 12, border: "none", borderRadius: 4, cursor: "pointer",
-                  background: opt.value === value ? "var(--accent-muted, rgba(139,92,246,0.15))" : "none",
-                  color: opt.value === value ? "var(--accent, #8b5cf6)" : "var(--text-primary)",
-                  fontFamily: "var(--font-mono)",
+                  fontSize: 12, padding: "4px 8px", margin: 4, marginBottom: 6,
+                  flexShrink: 0,
                 }}
-                onMouseEnter={(e) => { if (opt.value !== value) (e.target as HTMLElement).style.background = "var(--bg-hover, #2a2a3e)"; }}
-                onMouseLeave={(e) => { if (opt.value !== value) (e.target as HTMLElement).style.background = "none"; }}
-                onClick={() => { onChange(opt.value); setOpen(false); }}
-              >
-                {opt.label}
-              </button>
+              />
+            )}
+            {pinnedSelected && (
+              <>
+                <OptionRow option={pinnedSelected} active onPick={(v) => { onChange(v); setOpen(false); }} />
+                <div style={{ height: 1, background: "var(--border)", margin: "4px 2px" }} />
+              </>
+            )}
+            {matches.map((opt) => (
+              <OptionRow
+                key={opt.value}
+                option={opt}
+                active={opt.value === value}
+                onPick={(v) => { onChange(v); setOpen(false); }}
+              />
             ))}
+            {matches.length === 0 && !pinnedSelected && (
+              <span style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-muted)" }}>
+                No matches
+              </span>
+            )}
           </div>
         </>
       )}
     </div>
+  );
+}
+
+function OptionRow({ option, active, onPick }: {
+  option: { value: string; label: string };
+  active: boolean;
+  onPick: (value: string) => void;
+}) {
+  return (
+    <button
+      aria-current={active ? "true" : undefined}
+      style={{
+        display: "block", width: "100%", textAlign: "left",
+        padding: "6px 10px", fontSize: 12, border: "none", borderRadius: 4, cursor: "pointer",
+        background: active ? "var(--accent-muted, rgba(139,92,246,0.15))" : "none",
+        color: active ? "var(--accent, #8b5cf6)" : "var(--text-primary)",
+        fontFamily: "var(--font-mono)",
+      }}
+      onMouseEnter={(e) => { if (!active) (e.target as HTMLElement).style.background = "var(--bg-hover, #2a2a3e)"; }}
+      onMouseLeave={(e) => { if (!active) (e.target as HTMLElement).style.background = "none"; }}
+      onClick={() => onPick(option.value)}
+    >
+      {option.label}
+    </button>
   );
 }

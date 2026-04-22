@@ -24,7 +24,7 @@ SyntaxHighlighter.registerLanguage("json", json);
 SyntaxHighlighter.registerLanguage("yaml", yaml);
 SyntaxHighlighter.registerLanguage("yml", yaml);
 SyntaxHighlighter.registerLanguage("diff", diff);
-import { api, subscribeAIEvents } from "../api";
+import { api, isWails, subscribeAIEvents } from "../api";
 
 interface AiAnalysisPanelProps {
   visible: boolean;
@@ -35,9 +35,13 @@ interface AiAnalysisPanelProps {
   error?: string;
   /** Stream ID returned from api.startAnalysis / follow-up in web mode. Ignored in Wails. */
   streamId?: string;
+  /** Target ID — enables in-panel source-directory setup when analysis fails for lack of one. */
+  targetId?: string;
+  /** Called after the user saves a source directory so the parent can re-run the analysis that failed. */
+  onRetry?: () => void;
 }
 
-export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLevel, onPermLevelChange, error, streamId }: AiAnalysisPanelProps) {
+export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLevel, onPermLevelChange, error, streamId, targetId, onRetry }: AiAnalysisPanelProps) {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [activity, setActivity] = useState("");
@@ -66,6 +70,25 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
       setUnread(false);
     }
   }, [visible]);
+
+  // A new streamId means the parent fired a fresh analysis (e.g. the inline
+  // source-dir form retried after saving). The panel is already open so the
+  // visible-effect above doesn't run — reset the run-specific state here so
+  // the user sees "Starting AI analysis..." instead of the empty fallback
+  // until the first event arrives.
+  useEffect(() => {
+    if (!streamId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setContent("");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setActivity("");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSessionId(undefined);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWorkingDir(undefined);
+  }, [streamId]);
 
   // When the run state changes while the panel is collapsed, flag "unread" so
   // the collapsed strip shows a dot and the user knows something happened.
@@ -193,8 +216,10 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
     );
   }
 
+  const needsSourceDir = !!error && error.includes("source directory") && !!targetId && !!onRetry;
+
   let displayError: string | undefined;
-  if (error) {
+  if (error && !needsSourceDir) {
     displayError = error.includes("source directory")
       ? "No source directory configured.\n\nTo use AI analysis:\n1. Go to the target's **Info** tab\n2. Set the **Source Directory** to your Go project root\n3. Come back here and try again"
       : "**Error:** " + error;
@@ -332,7 +357,23 @@ export default function AiAnalysisPanel({ visible, onClose, onFollowUp, permLeve
           cursor: "text",
         }}
       >
-        {displayError ? (
+        {needsSourceDir && targetId && onRetry ? (
+          <SourceDirSetupForm
+            targetId={targetId}
+            onSaved={() => {
+              // Reset run-specific state synchronously so the user sees a
+              // "Starting AI analysis..." spinner while the retry's
+              // api.startAnalysis call is in flight, not the stale fallback
+              // from the previous (failed) run.
+              setContent("");
+              setLoading(true);
+              setActivity("");
+              setSessionId(undefined);
+              setWorkingDir(undefined);
+              onRetry();
+            }}
+          />
+        ) : displayError ? (
           <Markdown remarkPlugins={[remarkGfm]}>{displayError}</Markdown>
         ) : content ? (
           <Markdown
@@ -548,5 +589,109 @@ function CollapsedStrip({ loading, hasError, unread, onExpand }: {
         {statusLabel}
       </span>
     </button>
+  );
+}
+
+function SourceDirSetupForm({ targetId, onSaved }: { targetId: string; onSaved: () => void }) {
+  const [path, setPath] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const canSubmit = path.trim() !== "" && !saving;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      await api.setSourceDir(targetId, path.trim());
+      onSaved();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveError(msg || "Failed to save source directory");
+      setSaving(false);
+    }
+  };
+
+  const browse = async () => {
+    try {
+      const dir = await api.browseSourceDir();
+      if (dir) setPath(dir);
+    } catch {
+      /* ignore — user cancelled or dialog failed */
+    }
+  };
+
+  return (
+    <div style={{ color: "var(--text-primary)", fontSize: 13, lineHeight: 1.6 }}>
+      <h3 style={{ fontSize: 15, margin: "0 0 8px 0" }}>Source directory required</h3>
+      <p style={{ margin: "0 0 12px 0", color: "var(--text-muted)" }}>
+        The AI needs to read your project source to explain the profile. Point it at the root of your codebase.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <input
+          ref={inputRef}
+          className="input"
+          type="text"
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          placeholder="Path to source directory..."
+          aria-label="Source directory path"
+          style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
+          disabled={saving}
+        />
+        {isWails() && (
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={browse}
+            disabled={saving}
+            type="button"
+          >
+            Browse…
+          </button>
+        )}
+      </div>
+
+      {!isWails() && (
+        <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 12px 0" }}>
+          Absolute path on the server's filesystem, e.g. <span className="mono">/Users/you/projects/myrepo</span>.
+        </p>
+      )}
+
+      {saveError && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 12,
+            padding: "8px 12px",
+            background: "rgba(239, 68, 68, 0.1)",
+            border: "1px solid var(--danger, #ef4444)",
+            borderRadius: 4,
+            color: "var(--danger, #ef4444)",
+            fontSize: 12,
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={submit}
+          disabled={!canSubmit}
+          type="button"
+        >
+          {saving ? "Saving..." : "Save & Start"}
+        </button>
+      </div>
+    </div>
   );
 }

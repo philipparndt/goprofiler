@@ -367,21 +367,38 @@ func (s *Store) SetLocalPid(id string, pid int, mainClass string) {
 	}
 }
 
-func (s *Store) SetSourceDir(id, dir string) error {
+func (s *Store) SetSourceDir(idOrURL, dir string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if t, ok := s.active[id]; ok {
+	if t, ok := s.active[idOrURL]; ok {
 		t.SourceDir = dir
 		s.persist()
 		return nil
 	}
-	if t, ok := s.saved[id]; ok {
+	if t, ok := s.saved[idOrURL]; ok {
 		t.SourceDir = dir
 		s.persist()
 		return nil
 	}
-	return fmt.Errorf("target not found: %s", id)
+	// Fallback: some callers (flame graph explain, trace analysis) pass the
+	// target URL instead of its internal ID. Look it up that way too so the
+	// behaviour matches AnalysisService.resolveSourceDirByID.
+	for _, t := range s.active {
+		if t.URL == idOrURL {
+			t.SourceDir = dir
+			s.persist()
+			return nil
+		}
+	}
+	for _, t := range s.saved {
+		if t.URL == idOrURL {
+			t.SourceDir = dir
+			s.persist()
+			return nil
+		}
+	}
+	return fmt.Errorf("target not found: %s", idOrURL)
 }
 
 func (s *Store) Get(id string) (*Target, bool) {

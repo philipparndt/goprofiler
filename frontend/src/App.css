@@ -5,6 +5,9 @@
 }
 
 .sidebar {
+  /* Width is set via inline style at runtime (see Sidebar in App.tsx).
+     The CSS variable remains the fallback for environments where JS hasn't
+     populated the state yet. */
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
   background: var(--bg-secondary);
@@ -12,6 +15,7 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  position: relative;
 }
 
 .sidebar-header {

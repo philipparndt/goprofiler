@@ -374,18 +374,22 @@ func (s *AnalysisService) sessionForwarder(session *ClaudeSession, sessionCancel
 		}
 	}
 
-	// Session ended (Close() or process exit). Tear down any turn still
-	// attached and clear the session pointer if it's still ours.
+	// Session ended (Close() or process exit). Only tear down state we still
+	// own: if s.session is no longer us, a subsequent startClaudeSession has
+	// already taken over and s.currentOut / s.currentStreamID belong to the
+	// new forwarder — we must not close them.
 	s.mu.Lock()
+	if s.session != session {
+		s.mu.Unlock()
+		return
+	}
 	if s.currentOut != nil {
 		close(s.currentOut)
 		delete(s.streams, s.currentStreamID)
 		s.currentOut = nil
 		s.currentStreamID = ""
 	}
-	if s.session == session {
-		s.session = nil
-	}
+	s.session = nil
 	s.mu.Unlock()
 }
 

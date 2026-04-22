@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { TraceData } from "../../api";
 import TraceTimeline from "./TraceTimeline";
@@ -39,26 +39,33 @@ export default function TraceViewer({ profileId, targetUrl }: Props) {
   const [aiStreamId, setAiStreamId] = useState<string | undefined>();
   const [claudeAvailable, setClaudeAvailable] = useState(false);
   const [permLevel, setPermLevel] = useState<"read-only" | "edit-files">("read-only");
+  // Tracks the last AI call so the panel can retry it after the user fixes
+  // a precondition (e.g. sets a source directory in the inline form).
+  const lastAnalysisRunRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     api.checkClaudeAvailable().then(setClaudeAvailable).catch(() => {});
   }, []);
 
   const triggerTraceAi = async (mode: string, extra?: Record<string, any>) => {
-    setAiError(undefined);
-    setPermLevel("read-only");
-    setAiPanelVisible(true);
-    try {
-      const r = await api.startTraceAnalysis({
-        targetUrl: targetUrl || "",
-        profileId,
-        mode: mode as any,
-        ...extra,
-      });
-      setAiStreamId(r.streamId);
-    } catch (e: any) {
-      setAiError(e?.message || String(e));
-    }
+    const run = async () => {
+      setAiError(undefined);
+      setPermLevel("read-only");
+      setAiPanelVisible(true);
+      try {
+        const r = await api.startTraceAnalysis({
+          targetUrl: targetUrl || "",
+          profileId,
+          mode: mode as any,
+          ...extra,
+        });
+        setAiStreamId(r.streamId);
+      } catch (e: any) {
+        setAiError(e?.message || String(e));
+      }
+    };
+    lastAnalysisRunRef.current = run;
+    await run();
   };
 
   useEffect(() => {
@@ -325,14 +332,20 @@ export default function TraceViewer({ profileId, targetUrl }: Props) {
         permLevel={permLevel}
         onPermLevelChange={setPermLevel}
         streamId={aiStreamId}
+        targetId={targetUrl}
+        onRetry={() => lastAnalysisRunRef.current?.()}
         onFollowUp={async (message) => {
-          setAiError(undefined);
-          try {
-            const r = await api.followUpAnalysis({ targetUrl: targetUrl || "", message, permissionLevel: permLevel });
-            setAiStreamId(r.streamId);
-          } catch (e: any) {
-            setAiError(e?.message || String(e));
-          }
+          const run = async () => {
+            setAiError(undefined);
+            try {
+              const r = await api.followUpAnalysis({ targetUrl: targetUrl || "", message, permissionLevel: permLevel });
+              setAiStreamId(r.streamId);
+            } catch (e: any) {
+              setAiError(e?.message || String(e));
+            }
+          };
+          lastAnalysisRunRef.current = run;
+          await run();
         }}
       />
     </div>

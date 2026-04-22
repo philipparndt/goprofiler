@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import Dashboard from "./pages/Dashboard";
 import Connections from "./pages/Connections";
 import ConnectionDetail from "./pages/ConnectionDetail";
@@ -20,6 +20,34 @@ export function refreshSidebar() {
 export function onConnectionChange(fn: () => void) {
   connectionListeners.add(fn);
   return () => { connectionListeners.delete(fn); };
+}
+
+// Sidebar resize bounds + persistence
+const MIN_SIDEBAR = 180;
+const MAX_SIDEBAR = 480;
+const DEFAULT_SIDEBAR = 240;
+const SIDEBAR_STORAGE_KEY = "goprofiler.sidebarWidth";
+
+function readSavedSidebarWidth(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (raw == null) return DEFAULT_SIDEBAR;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < MIN_SIDEBAR || parsed > MAX_SIDEBAR) {
+      return DEFAULT_SIDEBAR;
+    }
+    return parsed;
+  } catch {
+    return DEFAULT_SIDEBAR;
+  }
+}
+
+function saveSidebarWidth(w: number): void {
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(Math.round(w)));
+  } catch {
+    /* localStorage unavailable — skip persistence */
+  }
 }
 
 function App() {
@@ -50,8 +78,57 @@ function App() {
 function Sidebar() {
   const [activeTargets, setActiveTargets] = useState<Target[]>([]);
   const [savedTargets, setSavedTargets] = useState<Target[]>([]);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readSavedSidebarWidth());
+  const [handleHover, setHandleHover] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [collapsedConns, setCollapsedConns] = useState<Set<string>>(new Set());
+  const dragging = useRef(false);
+
+  const toggleConnectionCollapsed = useCallback((id: string) => {
+    setCollapsedConns((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const location = useLocation();
   const navigate = useNavigate();
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    if (dragging.current) return;
+    dragging.current = true;
+    setIsResizing(true);
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    let latest = startWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      latest = Math.max(
+        MIN_SIDEBAR,
+        Math.min(MAX_SIDEBAR, startWidth + (ev.clientX - startX)),
+      );
+      setSidebarWidth(latest);
+    };
+    const onUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      setIsResizing(false);
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      saveSidebarWidth(latest);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [sidebarWidth]);
 
   const load = useCallback(() => {
     api.listTargets().then(setActiveTargets).catch(() => {});
@@ -80,7 +157,44 @@ function Sidebar() {
   };
 
   return (
-    <aside className="sidebar">
+    <aside
+      className="sidebar"
+      style={{ width: sidebarWidth, minWidth: sidebarWidth }}
+    >
+      <div
+        onMouseDown={handleResizeStart}
+        onMouseEnter={() => setHandleHover(true)}
+        onMouseLeave={() => setHandleHover(false)}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        style={{
+          position: "absolute",
+          top: 0,
+          right: -4,
+          width: 8,
+          height: "100%",
+          cursor: "col-resize",
+          zIndex: 10,
+          background: "transparent",
+          display: "flex",
+          justifyContent: "center",
+        }}
+      >
+        {/* Visible vertical strip in the middle of the hit area. Wider + more
+            opaque while hovered or actively dragging so the user can see
+            exactly what they're grabbing. */}
+        <div
+          style={{
+            width: isResizing || handleHover ? 3 : 1,
+            height: "100%",
+            background: isResizing || handleHover
+              ? "var(--accent, #8b5cf6)"
+              : "var(--border)",
+            transition: "background 0.12s ease, width 0.12s ease",
+          }}
+        />
+      </div>
       <div className="sidebar-header">
         <div className="logo">
           <img src="/logo.svg" alt="GoProfiler" width="28" height="28" />
@@ -110,12 +224,14 @@ function Sidebar() {
               const displayUrl = displayName(t);
               const isConnected = t.status === "connected" || t.status === "unreachable";
 
+              const isCollapsed = collapsedConns.has(t.id);
+
               return (
                 <div key={t.id} style={{ marginBottom: 2 }}>
                   <NavLink
                     to={`${basePath}/info`}
                     style={{
-                      padding: "6px 12px 6px 20px",
+                      padding: "6px 12px 6px 6px",
                       fontSize: 12,
                       fontWeight: 600,
                       color: isConnectionActive ? "var(--text-primary)" : "var(--text-muted)",
@@ -130,6 +246,47 @@ function Sidebar() {
                       cursor: "pointer",
                     }}
                   >
+                    {isConnected ? (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleConnectionCollapsed(t.id); }}
+                        aria-label={isCollapsed ? "Expand connection" : "Collapse connection"}
+                        aria-expanded={!isCollapsed}
+                        title={isCollapsed ? "Expand" : "Collapse"}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          padding: 0,
+                          width: 14,
+                          height: 14,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "var(--text-muted)",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <svg
+                          width="10"
+                          height="10"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          style={{
+                            transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                            transition: "transform 0.12s ease",
+                          }}
+                        >
+                          <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <span style={{ width: 14, flexShrink: 0 }} />
+                    )}
                     <span className={`status-dot ${t.status}`} style={{ flexShrink: 0 }} />
                     <LanguageBadge language={t.language || "go"} />
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{displayUrl}</span>
@@ -153,7 +310,7 @@ function Sidebar() {
                       </button>
                     )}
                   </NavLink>
-                  {isConnected && (
+                  {isConnected && !isCollapsed && (
                     <>
                       <NavLink
                         to={`${basePath}/profiling`}

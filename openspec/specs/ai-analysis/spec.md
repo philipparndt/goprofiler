@@ -147,3 +147,157 @@ A persistent CLI process is rooted in one working directory and one permission m
 - **WHEN** a follow-up request's permission level differs from the one the active session was spawned with
 - **THEN** the active session is closed and a new process is spawned with the new permission mode before the message is sent.
 
+### Requirement: The AI analysis panel SHALL support collapsing without stopping the analysis
+
+The panel MUST expose a user control that switches it from an expanded view to a compact collapsed view. Collapsing MUST NOT cancel the active analysis or drop the event subscription — the run continues in the background and any events produced while collapsed MUST still update the panel's internal state.
+
+#### Scenario: Collapsing during an active run
+- **WHEN** an analysis is producing events and the user activates the collapse control
+- **THEN** the panel renders its compact collapsed view
+- **AND** the underlying analysis process continues to run
+- **AND** events received while collapsed continue to update the panel's content, activity, and session-ID state.
+
+#### Scenario: Re-expanding shows current state
+- **WHEN** the user activates the expand control while events have been received in the background
+- **THEN** the panel renders its expanded view with the current accumulated content, the latest activity line, and the latest session ID
+- **AND** the panel remains on the same analysis (no new run is started).
+
+#### Scenario: Collapse is distinct from Cancel and Close
+- **WHEN** the user collapses the panel
+- **THEN** neither the analysis is cancelled nor the panel's state is cleared
+- **AND** the existing Cancel control still stops the current turn without hiding the panel
+- **AND** the existing Close control still cancels the analysis and removes the panel.
+
+### Requirement: The collapsed view SHALL communicate analysis status at a glance
+
+The collapsed view MUST show whether the analysis is running, has finished, or has errored, using a visual indicator that differentiates these three states without requiring the panel to be expanded.
+
+#### Scenario: Running state
+- **WHEN** the panel is collapsed and the analysis is still receiving events
+- **THEN** the collapsed view shows a live/pulsing indicator and a "running" status label.
+
+#### Scenario: Ready state
+- **WHEN** the panel is collapsed and the analysis has produced its final result
+- **THEN** the collapsed view shows an idle indicator and a "ready" status label.
+
+#### Scenario: Error state
+- **WHEN** the panel is collapsed and the analysis has emitted an error
+- **THEN** the collapsed view shows an error-styled indicator and an "error" status label.
+
+### Requirement: The collapsed view SHALL signal background completion or error
+
+If the analysis completes or errors while the panel is collapsed, the collapsed view MUST show an unread-style indicator so the user knows something happened. Expanding the panel MUST clear the indicator.
+
+#### Scenario: Run completes while collapsed
+- **WHEN** the panel is collapsed while the run is active and the run subsequently finishes
+- **THEN** the collapsed view additionally shows an unread marker alongside the status indicator.
+
+#### Scenario: Expanding clears the unread marker
+- **WHEN** the user expands the panel after a background completion
+- **THEN** the unread marker is removed on the next render.
+
+### Requirement: The collapsed view SHALL be operable by keyboard
+
+The collapsed view MUST be focusable and activatable via keyboard with a descriptive accessible label so users can expand the panel without a mouse.
+
+#### Scenario: Expand via keyboard
+- **WHEN** the collapsed view has keyboard focus and the user activates it (Enter or Space)
+- **THEN** the panel expands.
+
+#### Scenario: Accessible label reflects state
+- **WHEN** the collapsed view is focused by a screen reader
+- **THEN** the announced label reflects the current status (running / ready / error).
+
+### Requirement: The AI panel SHALL offer in-panel source-directory setup when the analysis cannot start
+
+When an analysis start fails because the active target has no source directory configured, the analysis panel MUST render a form that lets the user enter the source directory directly, rather than only displaying a textual instruction to navigate elsewhere.
+
+#### Scenario: Missing source dir surfaces the inline form
+- **WHEN** the user triggers an analysis on a target whose source directory is not configured
+- **THEN** the AI panel opens and renders a form containing a source-directory text input, a "Save & Start" action, and — in Wails mode — a native "Browse…" button.
+
+#### Scenario: Form supplies help text in web mode
+- **WHEN** the panel renders the source-directory form and the app is running in web/browser mode (no native dialog available)
+- **THEN** the form includes short help text explaining that the path is on the server's filesystem, with an example path.
+
+#### Scenario: Unrelated analysis errors are unchanged
+- **WHEN** the analysis fails for any reason other than a missing source directory
+- **THEN** the panel renders its usual error view without the source-directory form.
+
+### Requirement: Saving the directory SHALL retry the original analysis request automatically
+
+After the user submits the form, the panel MUST persist the directory via the existing setSourceDir API and then retry the exact analysis request that previously failed — same mode, same payload — without any additional user interaction.
+
+#### Scenario: Successful save and retry
+- **WHEN** the user enters a path and activates "Save & Start"
+- **THEN** the panel calls setSourceDir for the target
+- **AND** on success it clears any save-time error
+- **AND** it re-runs the previously-failed analysis so the panel transitions into its normal "loading" state.
+
+#### Scenario: Save fails
+- **WHEN** the setSourceDir call rejects (network, backend validation, etc.)
+- **THEN** the panel shows the save error near the input
+- **AND** the previously-failed analysis is NOT retried
+- **AND** the form remains visible so the user can correct the path.
+
+#### Scenario: Disabled until non-empty
+- **WHEN** the source-directory input is empty
+- **THEN** the "Save & Start" action is disabled.
+
+### Requirement: The panel SHALL fall back to the prior instruction text when retry cannot be wired
+
+If the panel is used in a context where the caller has not supplied a target ID or a retry callback, the source-directory form MUST NOT be rendered; the existing textual instruction MUST be rendered instead. This preserves backward compatibility for any caller that hasn't been updated.
+
+#### Scenario: Caller didn't supply target ID
+- **WHEN** the panel receives a "no source directory" error but no target ID is provided
+- **THEN** the panel renders the original textual instruction and no form.
+
+#### Scenario: Caller didn't supply a retry callback
+- **WHEN** the panel receives a "no source directory" error but no retry callback is provided
+- **THEN** the panel renders the original textual instruction and no form.
+
+### Requirement: The AI analysis panel SHALL display the current provider session identifier
+
+When the AI provider emits a session identifier (via the `sessionId` field on streamed events), the analysis panel MUST surface that identifier in its header so the user can read it and copy it. Providers that do not emit a session identifier MUST NOT cause any placeholder or error UI — the slot simply stays empty.
+
+#### Scenario: Session ID appears after the first event
+- **WHEN** an analysis is running and the first event with a non-empty `sessionId` arrives
+- **THEN** the panel header displays the session identifier in a truncated form with a tooltip revealing the full value.
+
+#### Scenario: Session ID updates as the provider revises it
+- **WHEN** a subsequent event arrives with a different, non-empty `sessionId`
+- **THEN** the displayed identifier updates to match the most recent value.
+
+#### Scenario: Provider does not emit a session ID
+- **WHEN** the active provider never emits a session identifier (for example, GitHub Copilot)
+- **THEN** the panel header renders normally with no session-ID chip and no error.
+
+#### Scenario: Panel is opened for a new analysis
+- **WHEN** the panel is opened for a fresh analysis (it was previously closed or a new run has started)
+- **THEN** any prior session identifier is cleared before events begin arriving.
+
+### Requirement: The displayed session identifier SHALL be copyable in one click
+
+The panel MUST provide a control that copies the full session identifier to the system clipboard. The control MUST give the user transient visual confirmation that the copy succeeded.
+
+#### Scenario: Copying a session ID
+- **WHEN** the user clicks the copy control next to the session ID
+- **THEN** the full identifier is written to the clipboard
+- **AND** the control briefly indicates success (e.g. a "Copied" label for about 1.5 s) before reverting.
+
+#### Scenario: Clipboard access is denied
+- **WHEN** the browser denies clipboard access or the write throws
+- **THEN** the control briefly indicates failure (e.g. "Copy failed") and the panel remains operational.
+
+### Requirement: The panel SHALL provide a provider-appropriate resume hint
+
+When the active provider supports resuming a session by identifier (e.g. `claude --resume <id>`), the panel MUST show the exact command form so the user can take over in a terminal. For providers without a resume concept, the hint MUST be omitted.
+
+#### Scenario: Claude provider shows the resume command
+- **WHEN** the session ID is displayed and the active provider is `claude`
+- **THEN** the panel renders a helper that shows the command `claude --resume <id>` with the full ID accessible (via tooltip or expanded form).
+
+#### Scenario: Non-resumable provider omits the hint
+- **WHEN** the active provider is not known to support session resumption
+- **THEN** the panel omits the resume helper but still shows the raw session identifier.
+

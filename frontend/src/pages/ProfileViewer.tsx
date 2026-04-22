@@ -153,6 +153,9 @@ export default function ProfileViewer() {
   const [aiPanelVisible, setAiPanelVisible] = useState(false);
   const [aiError, setAiError] = useState<string | undefined>();
   const [aiStreamId, setAiStreamId] = useState<string | undefined>();
+  // Tracks the last AI call so the panel can retry it after the user fixes
+  // a precondition (e.g. sets a source directory in the inline form).
+  const lastAnalysisRunRef = useRef<(() => Promise<void>) | null>(null);
   const [permLevel, setPermLevel] = useState<"read-only" | "edit-files">("read-only");
   const [claudeAvailable, setClaudeAvailable] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; name: string } | null>(null);
@@ -507,15 +510,19 @@ export default function ProfileViewer() {
                     onClick={async () => {
                       const fns = getAnalysisFunctions();
                       if (!fns.length) return;
-                      setAiError(undefined);
-                      setPermLevel("read-only");
-                      setAiPanelVisible(true);
-                      try {
-                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", format: (profile as any)?.format || "", functions: fns, permissionLevel: "read-only" });
-                        setAiStreamId(r.streamId);
-                      } catch (e: any) {
-                        setAiError(e?.message || String(e));
-                      }
+                      const run = async () => {
+                        setAiError(undefined);
+                        setPermLevel("read-only");
+                        setAiPanelVisible(true);
+                        try {
+                          const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "explain", profileType: profile?.type || "", format: (profile as any)?.format || "", functions: fns, permissionLevel: "read-only" });
+                          setAiStreamId(r.streamId);
+                        } catch (e: any) {
+                          setAiError(e?.message || String(e));
+                        }
+                      };
+                      lastAnalysisRunRef.current = run;
+                      await run();
                     }}
                   >
                     Explain
@@ -525,15 +532,19 @@ export default function ProfileViewer() {
                     onClick={async () => {
                       const fns = getAnalysisFunctions();
                       if (!fns.length) return;
-                      setAiError(undefined);
-                      setPermLevel("read-only");
-                      setAiPanelVisible(true);
-                      try {
-                        const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", format: (profile as any)?.format || "", functions: fns, permissionLevel: "read-only" });
-                        setAiStreamId(r.streamId);
-                      } catch (e: any) {
-                        setAiError(e?.message || String(e));
-                      }
+                      const run = async () => {
+                        setAiError(undefined);
+                        setPermLevel("read-only");
+                        setAiPanelVisible(true);
+                        try {
+                          const r = await api.startAnalysis({ targetId: profile?.targetURL || "", profileId: id || "", mode: "optimize", profileType: profile?.type || "", format: (profile as any)?.format || "", functions: fns, permissionLevel: "read-only" });
+                          setAiStreamId(r.streamId);
+                        } catch (e: any) {
+                          setAiError(e?.message || String(e));
+                        }
+                      };
+                      lastAnalysisRunRef.current = run;
+                      await run();
                     }}
                   >
                     Optimize
@@ -606,14 +617,20 @@ export default function ProfileViewer() {
         permLevel={permLevel}
         onPermLevelChange={setPermLevel}
         streamId={aiStreamId}
+        targetId={profile?.targetURL}
+        onRetry={() => lastAnalysisRunRef.current?.()}
         onFollowUp={async (message) => {
-          setAiError(undefined);
-          try {
-            const r = await api.followUpAnalysis({ targetUrl: profile?.targetURL || "", message, permissionLevel: permLevel });
-            setAiStreamId(r.streamId);
-          } catch (e: any) {
-            setAiError(e?.message || String(e));
-          }
+          const run = async () => {
+            setAiError(undefined);
+            try {
+              const r = await api.followUpAnalysis({ targetUrl: profile?.targetURL || "", message, permissionLevel: permLevel });
+              setAiStreamId(r.streamId);
+            } catch (e: any) {
+              setAiError(e?.message || String(e));
+            }
+          };
+          lastAnalysisRunRef.current = run;
+          await run();
         }}
       />
       {ctxMenu && (
@@ -623,8 +640,6 @@ export default function ProfileViewer() {
           functionName={ctxMenu.name}
           onClose={() => setCtxMenu(null)}
           onExplain={async () => {
-            setAiError(undefined);
-            setAiPanelVisible(true);
             // Find the subtree for this function and compute its top functions
             const subtreeFns: AnalysisFunction[] = [];
             if (fgData) {
@@ -638,21 +653,28 @@ export default function ProfileViewer() {
                 }
               }
             }
-            try {
-              const r = await api.startAnalysis({
-                targetId: profile?.targetURL || "",
-                profileId: id || "",
-                mode: "explain-function",
-                profileType: profile?.type || "",
-                format: (profile as any)?.format || "",
-                functionName: ctxMenu.name,
-                functions: subtreeFns,
-                permissionLevel: permLevel,
-              });
-              setAiStreamId(r.streamId);
-            } catch (e: any) {
-              setAiError(e?.message || String(e));
-            }
+            const fnName = ctxMenu.name;
+            const run = async () => {
+              setAiError(undefined);
+              setAiPanelVisible(true);
+              try {
+                const r = await api.startAnalysis({
+                  targetId: profile?.targetURL || "",
+                  profileId: id || "",
+                  mode: "explain-function",
+                  profileType: profile?.type || "",
+                  format: (profile as any)?.format || "",
+                  functionName: fnName,
+                  functions: subtreeFns,
+                  permissionLevel: permLevel,
+                });
+                setAiStreamId(r.streamId);
+              } catch (e: any) {
+                setAiError(e?.message || String(e));
+              }
+            };
+            lastAnalysisRunRef.current = run;
+            await run();
           }}
         />
       )}
