@@ -3,11 +3,21 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// Pod annotations (or labels) that explicitly mark a pod as profilable.
+// Needed for pods that cannot declare their pprof/JMX port in the pod spec —
+// e.g. hostNetwork pods, where a declared containerPort would claim the port
+// on the node itself.
+const (
+	annotationLanguage = "goprofiler.io/language" // "go" or "java"
+	annotationPort     = "goprofiler.io/port"     // e.g. "6060"
 )
 
 // PodInfo represents a discovered pod with profiling-relevant metadata.
@@ -85,10 +95,40 @@ func ListPods(kubeconfigPath, contextName, namespace, search string) ([]PodInfo,
 			info.Containers = append(info.Containers, ci)
 		}
 
+		applyProfilingOverrides(&pod, &info)
+
 		result = append(result, info)
 	}
 
 	return result, nil
+}
+
+// applyProfilingOverrides applies explicit goprofiler.io/* annotations or
+// labels, which take precedence over image/port-based detection.
+func applyProfilingOverrides(pod *corev1.Pod, info *PodInfo) {
+	lookup := func(key string) string {
+		if v, ok := pod.Annotations[key]; ok {
+			return v
+		}
+		return pod.Labels[key]
+	}
+
+	if lang := lookup(annotationLanguage); lang == "go" || lang == "java" {
+		info.Language = lang
+	}
+
+	if portStr := lookup(annotationPort); portStr != "" {
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 || len(info.Containers) == 0 {
+			return
+		}
+		info.Containers[0].ProfilingPort = port
+		// A declared profiling port implies the pod is profilable; assume Go
+		// unless the language says otherwise.
+		if info.Language == "unknown" {
+			info.Language = "go"
+		}
+	}
 }
 
 func detectLanguage(c corev1.Container) string {
