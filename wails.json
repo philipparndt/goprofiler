@@ -12,7 +12,7 @@
     "name": "Philipp Arndt"
   },
   "info": {
-    "productVersion": "0.1.0",
+    "productVersion": "0.1.1",
     "copyright": "© Philipp Arndt",
     "comments": "GoProfiler — profiling UI for Go and Java applications"
   }
