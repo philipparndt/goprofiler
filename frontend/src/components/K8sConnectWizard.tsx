@@ -1,3 +1,4 @@
+import { technicalInputProps } from "../inputProps";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../api";
 import LanguageBadge from "./LanguageBadge";
@@ -147,6 +148,7 @@ export default function K8sConnectWizard({ onConnected }: Props) {
           style={{ flex: 1, minWidth: 120 }}
           placeholder="Search pods..."
           value={search}
+          {...technicalInputProps}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && doSearch()}
         />
@@ -304,6 +306,7 @@ function CustomDropdown({ value, options, onChange, searchable, searchThreshold,
                 placeholder={searchPlaceholder ?? "Filter…"}
                 aria-label={searchPlaceholder ?? "Filter"}
                 value={query}
+                {...technicalInputProps}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
                 style={{

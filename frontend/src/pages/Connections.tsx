@@ -1,3 +1,4 @@
+import { technicalInputProps } from "../inputProps";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
@@ -89,6 +90,7 @@ export default function Connections() {
           <div style={{ display: "flex", gap: 8 }}>
             <input
               className="input"
+              {...technicalInputProps}
               placeholder={connectionType === "go-pprof" ? "http://localhost:6060" : "localhost:9999 (JMX port)"}
               value={url}
               onChange={(e) => setUrl(e.target.value)}

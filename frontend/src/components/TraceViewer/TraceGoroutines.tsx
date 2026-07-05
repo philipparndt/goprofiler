@@ -1,3 +1,4 @@
+import { technicalInputProps } from "../../inputProps";
 import { useState } from "react";
 import type { TraceData } from "../../api";
 
@@ -156,6 +157,7 @@ export default function TraceGoroutines({ data, onSelectGoroutine, onAiAnalyze }
         <input
           className="input"
           style={{ maxWidth: 280 }}
+          {...technicalInputProps}
           placeholder="Filter goroutines..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}

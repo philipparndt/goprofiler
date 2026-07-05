@@ -1,3 +1,4 @@
+import { technicalInputProps } from "../inputProps";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { api } from "../api";
@@ -322,6 +323,7 @@ export default function ProfileViewer() {
               <form onSubmit={(e) => { e.preventDefault(); addTag(tagInput); }} style={{ display: "inline-flex", gap: 4 }}>
                 <input
                   className="input"
+                  {...technicalInputProps}
                   value={tagInput}
                   onChange={(e) => setTagInput(e.target.value)}
                   placeholder="tag name"
@@ -470,6 +472,7 @@ export default function ProfileViewer() {
               <input
                 className="input"
                 style={{ maxWidth: 300 }}
+                {...technicalInputProps}
                 placeholder="Search functions..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1018,6 +1021,7 @@ function CallTree({ root, onSelectFunction }: {
           <input
             className="input"
             style={{ maxWidth: 300 }}
+            {...technicalInputProps}
             placeholder="Search call tree..."
             value={treeSearch}
             onChange={(e) => setTreeSearch(e.target.value)}

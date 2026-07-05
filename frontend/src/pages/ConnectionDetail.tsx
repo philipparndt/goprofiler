@@ -1,3 +1,4 @@
+import { technicalInputProps } from "../inputProps";
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { api, isWails } from "../api";
@@ -296,6 +297,7 @@ export default function ConnectionDetail() {
                                     <input
                                       autoFocus
                                       className="input"
+                                      {...technicalInputProps}
                                       style={{ width: 90, padding: "2px 6px", fontSize: 11, height: 22 }}
                                       placeholder="tag name"
                                       value={addTagInput}
@@ -472,6 +474,7 @@ export default function ConnectionDetail() {
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="text"
+              {...technicalInputProps}
               value={sourceDir}
               onChange={(e) => setSourceDir(e.target.value)}
               onBlur={() => { if (id) api.setSourceDir(id, sourceDir).catch(() => {}); }}

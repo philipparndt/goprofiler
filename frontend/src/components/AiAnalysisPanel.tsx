@@ -1,3 +1,4 @@
+import { technicalInputProps } from "../inputProps";
 import { useEffect, useRef, useState, useCallback } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -639,6 +640,7 @@ function SourceDirSetupForm({ targetId, onSaved }: { targetId: string; onSaved: 
           ref={inputRef}
           className="input"
           type="text"
+          {...technicalInputProps}
           value={path}
           onChange={(e) => setPath(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
