@@ -1,5 +1,7 @@
 .PHONY: all build build-frontend build-backend dev dev-frontend dev-backend build-desktop dev-desktop run run-desktop run-java-sample clean help
 
+.DEFAULT_GOAL := help
+
 all: build
 
 help:
