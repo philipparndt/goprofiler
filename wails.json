@@ -10,5 +10,10 @@
   "wailsjsdir": "frontend/src",
   "author": {
     "name": "Philipp Arndt"
+  },
+  "info": {
+    "productVersion": "0.1.0",
+    "copyright": "© Philipp Arndt",
+    "comments": "GoProfiler — profiling UI for Go and Java applications"
   }
 }
