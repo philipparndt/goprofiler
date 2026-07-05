@@ -367,9 +367,23 @@ func (s *Store) SetLocalPid(id string, pid int, mainClass string) {
 	}
 }
 
+// expandHome resolves a leading "~" to the user's home directory. Only the
+// shell expands "~"; stored paths are used verbatim (e.g. as the AI session's
+// working directory), so it must be resolved before persisting.
+func expandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
+}
+
 func (s *Store) SetSourceDir(idOrURL, dir string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	dir = expandHome(strings.TrimSpace(dir))
 
 	if t, ok := s.active[idOrURL]; ok {
 		t.SourceDir = dir
