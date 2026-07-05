@@ -80,8 +80,9 @@ type Store struct {
 	cancel   context.CancelFunc
 	filePath string
 
-	OnConnect    func(id, url string) // called after a target connects
-	OnDisconnect func(id string)      // called after a target disconnects
+	OnConnect    func(id, url string)             // called after a target connects
+	OnDisconnect func(id string)                  // called after a target disconnects
+	OnURLChange  func(id, oldURL, newURL string)  // called when a target's dial URL changes
 
 	// ValidateJava is called to health-check Java targets. Set by the app layer.
 	ValidateJava func(url string) error
@@ -341,14 +342,27 @@ func (s *Store) SetLabel(id, label string) {
 
 func (s *Store) UpdateURL(id, newURL string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var oldURL string
+	changed := false
 	if t, ok := s.saved[id]; ok {
+		oldURL = t.URL
 		t.URL = newURL
-		s.persist()
+		changed = true
 	}
 	if t, ok := s.active[id]; ok {
+		oldURL = t.URL
 		t.URL = newURL
+		changed = true
+	}
+	if changed {
 		s.persist()
+	}
+	s.mu.Unlock()
+
+	// Fire outside the lock: the callback reaches into storage, and holding
+	// s.mu across an unrelated subsystem invites deadlocks.
+	if changed && oldURL != newURL && s.OnURLChange != nil {
+		s.OnURLChange(id, oldURL, newURL)
 	}
 }
 

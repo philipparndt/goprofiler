@@ -91,6 +91,13 @@ func main() {
 		cpuMonitorSvc.StopTarget(id)
 		javaMonitorSvc.StopTarget(id)
 	}
+	connStore.OnURLChange = func(id, oldURL, newURL string) {
+		// K8s port-forwards change the local port on reconnect; keep the
+		// recorded profiles attached to the target's new dial URL.
+		if err := store.ReassignProfiles(oldURL, newURL); err != nil {
+			logger.Error("failed to reassign profiles on url change", "error", err)
+		}
+	}
 	connStore.ValidateJava = func(url string) error {
 		host, port, err := java.ParseJMXAddress(url)
 		if err != nil {

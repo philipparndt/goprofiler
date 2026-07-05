@@ -157,6 +157,24 @@ func (s *Store) ListProfiles(profileType, targetURL, tag string) ([]ProfileRecor
 	return profiles, rows.Err()
 }
 
+// ReassignProfiles moves all profiles recorded under oldURL to newURL. K8s
+// port-forwards get a fresh local port on every reconnect, so the dial URL
+// changes even though it is the same logical target; without this the
+// previously recorded profiles would stay orphaned under the dead port.
+func (s *Store) ReassignProfiles(oldURL, newURL string) error {
+	if oldURL == "" || oldURL == newURL {
+		return nil
+	}
+	res, err := s.db.Exec("UPDATE profiles SET target_url = ? WHERE target_url = ?", newURL, oldURL)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		logger.Info("reassigned profiles to new target url", "old", oldURL, "new", newURL, "count", n)
+	}
+	return nil
+}
+
 func (s *Store) ProfileCountsByTarget() (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT target_url, COUNT(*) FROM profiles GROUP BY target_url`)
 	if err != nil {
