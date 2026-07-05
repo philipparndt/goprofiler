@@ -95,9 +95,17 @@ export function isWails(): boolean {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function wailsCall(method: string, ...args: any[]): Promise<any> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (window as any).go.main.App[method](...args);
+async function wailsCall(method: string, ...args: any[]): Promise<any> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await (window as any).go.main.App[method](...args);
+  } catch (e) {
+    // Wails rejects with the Go error as a plain string, not an Error —
+    // normalize so callers reading e.message get the real message instead
+    // of undefined (which their generic fallbacks then hide).
+    if (e instanceof Error) throw e;
+    throw new Error(typeof e === "string" ? e : JSON.stringify(e));
+  }
 }
 
 // --- HTTP (browser) mode ---

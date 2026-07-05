@@ -75,7 +75,7 @@ func (m *PortForwardManager) Start(contextName, namespace, podName string, remot
 		args = append([]string{"--context", contextName}, args...)
 	}
 
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := exec.CommandContext(ctx, kubectlBin(), args...)
 
 	// Capture stderr for error reporting
 	stderrPipe, _ := cmd.StderrPipe()
@@ -86,7 +86,8 @@ func (m *PortForwardManager) Start(contextName, namespace, podName string, remot
 		m.mu.Lock()
 		delete(m.forwards, targetID)
 		m.mu.Unlock()
-		return 0, fmt.Errorf("start kubectl: %w", err)
+		logger.Error("failed to start kubectl port-forward", "kubectl", cmd.Path, "error", err)
+		return 0, fmt.Errorf("start kubectl (%s): %w", cmd.Path, err)
 	}
 
 	// Wait for "Forwarding from" message or timeout
