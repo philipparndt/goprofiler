@@ -45,6 +45,21 @@
 - Process info display (binary name, Go version, OS/arch)
 - Dynamic sidebar with per-connection navigation
 
+## Install
+
+### Homebrew (macOS)
+
+```bash
+brew install philipparndt/goprofiler/goprofiler
+```
+
+This installs the GoProfiler desktop app (signed and notarized). Upgrade later with `brew upgrade --cask goprofiler`.
+
+> Recent Homebrew versions ask you to trust third-party taps first:
+> `brew trust philipparndt/goprofiler`
+
+Alternatively, download `GoProfiler-<version>.zip` from the [releases page](https://github.com/philipparndt/goprofiler/releases) and drag `GoProfiler.app` into `/Applications`.
+
 ## Quick Start
 
 ### Prerequisites
