@@ -13,6 +13,7 @@ interface DiscoveryState {
   contexts: { name: string; cluster: string; namespace: string; isCurrent: boolean }[];
   namespaces: string[];
   pods: any[];
+  podsError?: string;
 }
 
 export default function K8sConnectWizard({ onConnected }: Props) {
@@ -39,6 +40,7 @@ export default function K8sConnectWizard({ onConnected }: Props) {
     try {
       const result = await api.discoverK8s(ctx || selectedCtx, ns ?? selectedNs, q ?? search);
       setData(result);
+      if (result.podsError) setError(result.podsError);
       hasDataRef.current = true;
       if (!ctx && !selectedCtx && result.currentContext) {
         setSelectedCtx(result.currentContext);

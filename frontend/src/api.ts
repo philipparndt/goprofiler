@@ -148,6 +148,7 @@ export const api = {
     contexts: { name: string; cluster: string; namespace: string; isCurrent: boolean }[];
     namespaces: string[];
     pods: { name: string; namespace: string; status: string; age: string; language: string; containers: { name: string; image: string; profilingPort?: number }[]; labels?: Record<string, string> }[];
+    podsError?: string;
   }> =>
     isWails()
       ? wailsCall("DiscoverK8s", context ?? "", namespace ?? "", search ?? "")

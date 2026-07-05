@@ -1,5 +1,9 @@
 package k8s
 
+import (
+	"github.com/philipparndt/go-logger"
+)
+
 // DiscoveryResult is the single response for the K8s discovery endpoint.
 // The backend resolves context, namespaces, and pods in one call.
 type DiscoveryResult struct {
@@ -7,6 +11,11 @@ type DiscoveryResult struct {
 	Contexts       []KubeContext `json:"contexts"`
 	Namespaces     []string      `json:"namespaces"`
 	Pods           []PodInfo     `json:"pods"`
+	// PodsError carries a pod-listing failure. Contexts/namespaces may still
+	// be usable, so the listing error is reported alongside the partial
+	// result instead of failing the whole discovery — the UI must show it
+	// rather than render an empty pod list as "no pods found".
+	PodsError string `json:"podsError,omitempty"`
 }
 
 // Discover loads the full K8s state in one call: contexts, namespaces for the
@@ -34,13 +43,17 @@ func Discover(kubeconfigPath, contextName, namespace, search string) (*Discovery
 	namespaces, err := ListNamespaces(kubeconfigPath, contextName)
 	if err != nil {
 		// Non-fatal — user might not have namespace list permission
+		logger.Warn("k8s discover: list namespaces failed", "context", contextName, "error", err)
 		namespaces = []string{}
 	}
 
 	// 3. Load pods
+	podsError := ""
 	pods, err := ListPods(kubeconfigPath, contextName, namespace, search)
 	if err != nil {
+		logger.Error("k8s discover: list pods failed", "context", contextName, "namespace", namespace, "error", err)
 		pods = []PodInfo{}
+		podsError = err.Error()
 	}
 
 	return &DiscoveryResult{
@@ -48,5 +61,6 @@ func Discover(kubeconfigPath, contextName, namespace, search string) (*Discovery
 		Contexts:       contexts,
 		Namespaces:     namespaces,
 		Pods:           pods,
+		PodsError:      podsError,
 	}, nil
 }
