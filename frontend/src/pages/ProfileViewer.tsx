@@ -9,6 +9,7 @@ import flamegraph from "d3-flame-graph";
 import type { FlameGraphNode } from "d3-flame-graph";
 import { select } from "d3-selection";
 import TraceViewer from "../components/TraceViewer/TraceViewer";
+import { flameSubtreeToText, copyToClipboard } from "../flameText";
 
 function formatBytes(bytes: number): string {
   if (bytes < 0) return "-" + formatBytes(-bytes);
@@ -567,7 +568,6 @@ export default function ProfileViewer() {
               ref={chartRef}
               style={{ minHeight: 300 }}
               onContextMenu={(e) => {
-                if (!claudeAvailable) return;
                 const target = e.target as HTMLElement;
                 const label = target.closest(".d3-flame-graph-label") || target.closest("g");
                 if (!label) return;
@@ -642,7 +642,16 @@ export default function ProfileViewer() {
           y={ctxMenu.y}
           functionName={ctxMenu.name}
           onClose={() => setCtxMenu(null)}
-          onExplain={async () => {
+          onCopy={async () => {
+            if (!fgData) return false;
+            const node = findNodeByName(fgData, ctxMenu.name);
+            if (!node) return false;
+            const ptype = profile?.type || "";
+            const header = `# ${ptype} profile — "${ctxMenu.name}" with children (profile total: ${formatValue(fgData.value, ptype)})`;
+            const text = header + "\n" + flameSubtreeToText(node, fgData.value, (v) => formatValue(v, ptype));
+            return copyToClipboard(text);
+          }}
+          onExplain={!claudeAvailable ? undefined : async () => {
             // Find the subtree for this function and compute its top functions
             const subtreeFns: AnalysisFunction[] = [];
             if (fgData) {

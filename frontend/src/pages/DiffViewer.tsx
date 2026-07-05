@@ -5,6 +5,8 @@ import type { ProfileDetail, CallTreeNode } from "../api";
 import flamegraph from "d3-flame-graph";
 import type { FlameGraphNode } from "d3-flame-graph";
 import { select } from "d3-selection";
+import ContextMenu from "../components/ContextMenu";
+import { flameSubtreeToText, copyToClipboard, findFlameNode } from "../flameText";
 
 type DiffTab = "flamegraph" | "calltree";
 
@@ -233,6 +235,7 @@ function DiffFlameGraph({
 }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; name: string } | null>(null);
 
   useEffect(() => {
     if (!data || !chartRef.current) return;
@@ -255,7 +258,35 @@ function DiffFlameGraph({
 
   return (
     <div className="card" style={{ padding: 12, marginBottom: 16, overflow: "auto" }}>
-      <div ref={chartRef} style={{ minHeight: 300 }} />
+      <div
+        ref={chartRef}
+        style={{ minHeight: 300 }}
+        onContextMenu={(e) => {
+          const target = e.target as HTMLElement;
+          const label = target.closest(".d3-flame-graph-label") || target.closest("g");
+          if (!label) return;
+          const text = label.textContent?.trim();
+          if (!text) return;
+          e.preventDefault();
+          setCtxMenu({ x: e.clientX, y: e.clientY, name: text });
+        }}
+      />
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          functionName={ctxMenu.name}
+          onClose={() => setCtxMenu(null)}
+          onCopy={async () => {
+            const node = findFlameNode(data, ctxMenu.name);
+            if (!node) return false;
+            const fmtDelta = (v: number) => (v > 0 ? "+" : "") + v.toLocaleString();
+            const header = `# profile diff (base → compare) — "${ctxMenu.name}" with children; positive = grew, negative = shrank`;
+            const text = header + "\n" + flameSubtreeToText(node, Math.abs(data?.value || 0), fmtDelta);
+            return copyToClipboard(text);
+          }}
+        />
+      )}
     </div>
   );
 }

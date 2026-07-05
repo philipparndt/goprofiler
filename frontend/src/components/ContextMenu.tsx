@@ -1,13 +1,38 @@
+import { useState } from "react";
+
 interface ContextMenuProps {
   x: number;
   y: number;
   functionName: string;
-  onExplain: () => void;
+  /** AI explanation entry; omit to hide (e.g. no AI CLI installed). */
+  onExplain?: () => void;
+  /** Copy the segment + children as text; resolves true on success. */
+  onCopy?: () => Promise<boolean>;
   onClose: () => void;
   disabled?: boolean;
 }
 
-export default function ContextMenu({ x, y, functionName, onExplain, onClose, disabled }: ContextMenuProps) {
+const itemStyle = (disabled?: boolean): React.CSSProperties => ({
+  display: "block",
+  width: "100%",
+  textAlign: "left",
+  padding: "6px 12px",
+  fontSize: 13,
+  background: "none",
+  border: "none",
+  color: disabled ? "var(--text-muted)" : "var(--text-primary)",
+  cursor: disabled ? "default" : "pointer",
+  borderRadius: 4,
+});
+
+const hover = (disabled?: boolean) => ({
+  onMouseEnter: (e: React.MouseEvent) => { if (!disabled) (e.target as HTMLElement).style.background = "var(--bg-hover, #2a2a3e)"; },
+  onMouseLeave: (e: React.MouseEvent) => { (e.target as HTMLElement).style.background = "none"; },
+});
+
+export default function ContextMenu({ x, y, functionName, onExplain, onCopy, onClose, disabled }: ContextMenuProps) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
   return (
     <>
       <div
@@ -44,27 +69,33 @@ export default function ContextMenu({ x, y, functionName, onExplain, onClose, di
         >
           {functionName}
         </div>
-        <button
-          style={{
-            display: "block",
-            width: "100%",
-            textAlign: "left",
-            padding: "6px 12px",
-            fontSize: 13,
-            background: "none",
-            border: "none",
-            color: disabled ? "var(--text-muted)" : "var(--text-primary)",
-            cursor: disabled ? "default" : "pointer",
-            borderRadius: 4,
-          }}
-          disabled={disabled}
-          onMouseEnter={(e) => { if (!disabled) (e.target as HTMLElement).style.background = "var(--bg-hover, #2a2a3e)"; }}
-          onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
-          onClick={() => { if (!disabled) { onExplain(); onClose(); } }}
-        >
-          Explain this function
-          {disabled && <span style={{ fontSize: 11, display: "block", color: "var(--text-muted)" }}>Configure source directory first</span>}
-        </button>
+        {onCopy && (
+          <button
+            style={itemStyle()}
+            {...hover()}
+            onClick={async () => {
+              const ok = await onCopy();
+              setCopyState(ok ? "copied" : "failed");
+              // Leave brief visual feedback before the menu disappears.
+              setTimeout(onClose, ok ? 500 : 1200);
+            }}
+          >
+            {copyState === "idle" && "Copy as text (with children)"}
+            {copyState === "copied" && "Copied ✓"}
+            {copyState === "failed" && "Copy failed"}
+          </button>
+        )}
+        {onExplain && (
+          <button
+            style={itemStyle(disabled)}
+            disabled={disabled}
+            {...hover(disabled)}
+            onClick={() => { if (!disabled) { onExplain(); onClose(); } }}
+          >
+            Explain this function
+            {disabled && <span style={{ fontSize: 11, display: "block", color: "var(--text-muted)" }}>Configure source directory first</span>}
+          </button>
+        )}
       </div>
     </>
   );
