@@ -247,13 +247,31 @@ func (a *App) reconnectK8s(id string, saved *connection.Target) (*connection.Tar
 		a.portForwardMgr = k8s.NewPortForwardManager()
 	}
 
-	// Stop any existing port-forward
-	a.portForwardMgr.Stop(id)
+	// Pod names change on every deploy/restart — resolve the workload's
+	// current pod instead of blindly reusing the stored name.
+	return a.reconnectK8sToPod(id, saved, a.resolveCurrentK8sPod(id, saved))
+}
+
+// reconnectK8sToPod tears down the target's old port-forward/monitors,
+// forwards to the given pod, and reconnects the target on the new local port.
+func (a *App) reconnectK8sToPod(id string, saved *connection.Target, podName string) (*connection.Target, error) {
+	// If the target is still in the active set (unreachable ones stay
+	// there), move it to saved first: this also stops monitors and the old
+	// port-forward, and Reconnect below only accepts saved targets.
+	if _, ok := a.connections.Get(id); ok {
+		_ = a.connections.Disconnect(id)
+	} else {
+		a.portForwardMgr.Stop(id)
+	}
 
 	// Start a fresh port-forward
-	localPort, err := a.portForwardMgr.Start(saved.K8sContext, saved.K8sNamespace, saved.K8sPod, saved.K8sPort, id)
+	localPort, err := a.portForwardMgr.Start(saved.K8sContext, saved.K8sNamespace, podName, saved.K8sPort, id)
 	if err != nil {
 		return nil, fmt.Errorf("port-forward: %w", err)
+	}
+
+	if podName != saved.K8sPod {
+		a.connections.SetK8sInfo(id, saved.K8sContext, saved.K8sNamespace, podName, saved.K8sPort)
 	}
 
 	// Update the saved target's URL (port-forward is already ready) to the new local port, then reconnect
@@ -263,7 +281,46 @@ func (a *App) reconnectK8s(id string, saved *connection.Target) (*connection.Tar
 	}
 	a.connections.UpdateURL(id, newURL)
 
-	return a.connections.Reconnect(id)
+	t, err := a.connections.Reconnect(id)
+	if err != nil {
+		return nil, err
+	}
+	// Migrate pre-workload targets labeled with an ephemeral pod name to the
+	// stable workload name.
+	if t.K8sWorkloadName != "" && (t.Label == "" || t.Label == saved.K8sPod || t.Label == t.K8sPod) {
+		a.connections.SetLabel(id, t.K8sWorkloadName)
+		t.Label = t.K8sWorkloadName
+	}
+	return t, nil
+}
+
+// resolveCurrentK8sPod returns the name of the pod currently backing the
+// target's workload, falling back to the stored pod name. Targets saved
+// before workload tracking existed get their workload backfilled from the
+// stored pod if it still exists.
+func (a *App) resolveCurrentK8sPod(id string, target *connection.Target) string {
+	kubeconfigPath := a.settings.Get().KubeconfigPath
+
+	kind, name := target.K8sWorkloadKind, target.K8sWorkloadName
+	if kind == "" {
+		k, n, err := k8s.ResolveWorkload(kubeconfigPath, target.K8sContext, target.K8sNamespace, target.K8sPod)
+		if err != nil {
+			logger.Warn("could not backfill workload for k8s target", "pod", target.K8sPod, "error", err)
+			return target.K8sPod
+		}
+		kind, name = k, n
+		a.connections.SetK8sWorkload(id, kind, name)
+	}
+
+	current, err := k8s.FindPodForWorkload(kubeconfigPath, target.K8sContext, target.K8sNamespace, kind, name)
+	if err != nil {
+		logger.Warn("could not resolve current pod for workload", "workload", kind+"/"+name, "error", err)
+		return target.K8sPod
+	}
+	if current != target.K8sPod {
+		logger.Info("k8s pod changed since last connect", "workload", kind+"/"+name, "old", target.K8sPod, "new", current)
+	}
+	return current
 }
 
 // --- Profile bindings ---
@@ -1115,6 +1172,22 @@ func (a *App) ConnectK8sPod(contextName, namespace, podName string, port int, la
 		a.portForwardMgr = k8s.NewPortForwardManager()
 	}
 
+	// Resolve the stable workload (Deployment etc.) behind the pod so the
+	// connection survives pod restarts and redeploys.
+	kubeconfigPath := a.settings.Get().KubeconfigPath
+	wKind, wName, err := k8s.ResolveWorkload(kubeconfigPath, contextName, namespace, podName)
+	if err != nil {
+		logger.Warn("could not resolve workload, tracking pod directly", "pod", podName, "error", err)
+		wKind, wName = "Pod", podName
+	}
+
+	// Reuse an existing target for the same workload instead of piling up
+	// one sidebar entry per pod instance.
+	if existing, ok := a.connections.FindK8sWorkload(contextName, namespace, wKind, wName, port); ok {
+		logger.Info("reusing existing k8s target for workload", "workload", wKind+"/"+wName, "target", existing.ID)
+		return a.reconnectK8sToPod(existing.ID, existing, podName)
+	}
+
 	// Create a temporary target ID
 	targetID := uuid.New().String()
 
@@ -1142,9 +1215,11 @@ func (a *App) ConnectK8sPod(contextName, namespace, podName string, port int, la
 	// Reassign port-forward to the real target ID (without restarting)
 	a.portForwardMgr.Reassign(targetID, target.ID)
 
-	// Store K8s metadata and set label to pod name
+	// Store K8s metadata; label with the stable workload name, not the
+	// ephemeral pod instance name.
 	a.connections.SetK8sInfo(target.ID, contextName, namespace, podName, port)
-	a.connections.SetLabel(target.ID, podName)
+	a.connections.SetK8sWorkload(target.ID, wKind, wName)
+	a.connections.SetLabel(target.ID, wName)
 
 	t, ok := a.connections.Get(target.ID)
 	if !ok {

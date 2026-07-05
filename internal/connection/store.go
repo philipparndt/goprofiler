@@ -46,6 +46,11 @@ type Target struct {
 	K8sNamespace     string     `json:"k8sNamespace,omitempty"`
 	K8sPod           string     `json:"k8sPod,omitempty"`
 	K8sPort          int        `json:"k8sPort,omitempty"`
+	// Stable controller identity (e.g. Deployment "protect"). Pod names
+	// change on every deploy, so reconnects resolve the current pod from
+	// the workload instead of using K8sPod verbatim.
+	K8sWorkloadKind string `json:"k8sWorkloadKind,omitempty"`
+	K8sWorkloadName string `json:"k8sWorkloadName,omitempty"`
 }
 
 // savedTarget is the JSON-persisted form.
@@ -63,6 +68,8 @@ type savedTarget struct {
 	K8sNamespace     string    `json:"k8sNamespace,omitempty"`
 	K8sPod           string    `json:"k8sPod,omitempty"`
 	K8sPort          int       `json:"k8sPort,omitempty"`
+	K8sWorkloadKind  string    `json:"k8sWorkloadKind,omitempty"`
+	K8sWorkloadName  string    `json:"k8sWorkloadName,omitempty"`
 }
 
 type Store struct {
@@ -348,13 +355,58 @@ func (s *Store) UpdateURL(id, newURL string) {
 func (s *Store) SetK8sInfo(id, k8sContext, namespace, pod string, port int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t, ok := s.active[id]; ok {
+	t, ok := s.active[id]
+	if !ok {
+		t, ok = s.saved[id]
+	}
+	if ok {
 		t.K8sContext = k8sContext
 		t.K8sNamespace = namespace
 		t.K8sPod = pod
 		t.K8sPort = port
 		s.persist()
 	}
+}
+
+// SetK8sWorkload stores the stable controller identity behind a K8s target.
+func (s *Store) SetK8sWorkload(id, kind, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.active[id]
+	if !ok {
+		t, ok = s.saved[id]
+	}
+	if ok {
+		t.K8sWorkloadKind = kind
+		t.K8sWorkloadName = name
+		s.persist()
+	}
+}
+
+// FindK8sWorkload returns an existing target (active or saved) for the same
+// workload + port, so connecting to a redeployed pod reuses the connection
+// instead of piling up one entry per pod instance.
+func (s *Store) FindK8sWorkload(k8sContext, namespace, kind, name string, port int) (*Target, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	match := func(t *Target) bool {
+		return t.K8sWorkloadKind == kind && t.K8sWorkloadName == name &&
+			t.K8sContext == k8sContext && t.K8sNamespace == namespace && t.K8sPort == port
+	}
+	for _, t := range s.active {
+		if match(t) {
+			copy := *t
+			return &copy, true
+		}
+	}
+	for _, t := range s.saved {
+		if match(t) {
+			copy := *t
+			return &copy, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Store) SetLocalPid(id string, pid int, mainClass string) {
@@ -499,6 +551,8 @@ func (s *Store) loadFromFile() {
 			K8sNamespace:     st.K8sNamespace,
 			K8sPod:           st.K8sPod,
 			K8sPort:          st.K8sPort,
+			K8sWorkloadKind:  st.K8sWorkloadKind,
+			K8sWorkloadName:  st.K8sWorkloadName,
 		}
 	}
 
@@ -529,6 +583,8 @@ func (s *Store) persist() {
 			K8sNamespace:     t.K8sNamespace,
 			K8sPod:           t.K8sPod,
 			K8sPort:          t.K8sPort,
+			K8sWorkloadKind:  t.K8sWorkloadKind,
+			K8sWorkloadName:  t.K8sWorkloadName,
 		})
 	}
 	for _, t := range s.saved {
@@ -550,6 +606,8 @@ func (s *Store) persist() {
 			K8sNamespace:     t.K8sNamespace,
 			K8sPod:           t.K8sPod,
 			K8sPort:          t.K8sPort,
+			K8sWorkloadKind:  t.K8sWorkloadKind,
+			K8sWorkloadName:  t.K8sWorkloadName,
 		})
 	}
 

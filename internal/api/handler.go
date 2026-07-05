@@ -273,8 +273,16 @@ func (h *Handler) reconnectTarget(w http.ResponseWriter, r *http.Request) {
 			saved = t
 		}
 		if saved != nil && saved.IsK8s() {
+			// Pod names change on every deploy — resolve the workload's
+			// current pod instead of blindly reusing the stored name.
+			podName := saved.K8sPod
+			if saved.K8sWorkloadKind != "" {
+				if current, err := k8s.FindPodForWorkload(h.k8sConfig.KubeconfigPath, saved.K8sContext, saved.K8sNamespace, saved.K8sWorkloadKind, saved.K8sWorkloadName); err == nil {
+					podName = current
+				}
+			}
 			h.k8sConfig.PortForwardMgr.Stop(id)
-			localPort, err := h.k8sConfig.PortForwardMgr.Start(saved.K8sContext, saved.K8sNamespace, saved.K8sPod, saved.K8sPort, id)
+			localPort, err := h.k8sConfig.PortForwardMgr.Start(saved.K8sContext, saved.K8sNamespace, podName, saved.K8sPort, id)
 			if err != nil {
 				writeError(w, http.StatusBadGateway, "port-forward: "+err.Error())
 				return
@@ -284,6 +292,9 @@ func (h *Handler) reconnectTarget(w http.ResponseWriter, r *http.Request) {
 				newURL = fmt.Sprintf("localhost:%d", localPort)
 			}
 			h.connections.UpdateURL(id, newURL)
+			if podName != saved.K8sPod {
+				h.connections.SetK8sInfo(id, saved.K8sContext, saved.K8sNamespace, podName, saved.K8sPort)
+			}
 		}
 	}
 
@@ -1328,6 +1339,38 @@ func (h *Handler) connectK8sPod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the stable workload behind the pod so the connection survives
+	// restarts/redeploys, and reuse an existing target for the same workload.
+	wKind, wName, err := k8s.ResolveWorkload(h.k8sConfig.KubeconfigPath, req.Context, req.Namespace, req.Pod)
+	if err != nil {
+		wKind, wName = "Pod", req.Pod
+	}
+	if existing, ok := h.connections.FindK8sWorkload(req.Context, req.Namespace, wKind, wName, req.Port); ok {
+		if _, active := h.connections.Get(existing.ID); active {
+			_ = h.connections.Disconnect(existing.ID)
+		} else {
+			h.k8sConfig.PortForwardMgr.Stop(existing.ID)
+		}
+		localPort, err := h.k8sConfig.PortForwardMgr.Start(req.Context, req.Namespace, req.Pod, req.Port, existing.ID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "port-forward: "+err.Error())
+			return
+		}
+		newURL := fmt.Sprintf("http://localhost:%d", localPort)
+		if existing.Language == connection.LangJava {
+			newURL = fmt.Sprintf("localhost:%d", localPort)
+		}
+		h.connections.UpdateURL(existing.ID, newURL)
+		h.connections.SetK8sInfo(existing.ID, req.Context, req.Namespace, req.Pod, req.Port)
+		target, err := h.connections.Reconnect(existing.ID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "connect: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, target)
+		return
+	}
+
 	targetID := uuid.New().String()
 	localPort, err := h.k8sConfig.PortForwardMgr.Start(req.Context, req.Namespace, req.Pod, req.Port, targetID)
 	if err != nil {
@@ -1351,7 +1394,8 @@ func (h *Handler) connectK8sPod(w http.ResponseWriter, r *http.Request) {
 
 	h.k8sConfig.PortForwardMgr.Reassign(targetID, target.ID)
 	h.connections.SetK8sInfo(target.ID, req.Context, req.Namespace, req.Pod, req.Port)
-	h.connections.SetLabel(target.ID, req.Pod)
+	h.connections.SetK8sWorkload(target.ID, wKind, wName)
+	h.connections.SetLabel(target.ID, wName)
 
 	writeJSON(w, http.StatusOK, target)
 }

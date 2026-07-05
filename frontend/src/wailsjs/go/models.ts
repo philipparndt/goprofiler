@@ -186,6 +186,8 @@ export namespace connection {
 	    k8sNamespace?: string;
 	    k8sPod?: string;
 	    k8sPort?: number;
+	    k8sWorkloadKind?: string;
+	    k8sWorkloadName?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Target(source);
@@ -208,6 +210,8 @@ export namespace connection {
 	        this.k8sNamespace = source["k8sNamespace"];
 	        this.k8sPod = source["k8sPod"];
 	        this.k8sPort = source["k8sPort"];
+	        this.k8sWorkloadKind = source["k8sWorkloadKind"];
+	        this.k8sWorkloadName = source["k8sWorkloadName"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -395,6 +399,7 @@ export namespace k8s {
 	    contexts: KubeContext[];
 	    namespaces: string[];
 	    pods: PodInfo[];
+	    podsError?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DiscoveryResult(source);
@@ -406,6 +411,7 @@ export namespace k8s {
 	        this.contexts = this.convertValues(source["contexts"], KubeContext);
 	        this.namespaces = source["namespaces"];
 	        this.pods = this.convertValues(source["pods"], PodInfo);
+	        this.podsError = source["podsError"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -450,6 +456,8 @@ export namespace main {
 	    k8sNamespace?: string;
 	    k8sPod?: string;
 	    k8sPort?: number;
+	    k8sWorkloadKind?: string;
+	    k8sWorkloadName?: string;
 	    profileCount: number;
 	
 	    static createFrom(source: any = {}) {
@@ -473,6 +481,8 @@ export namespace main {
 	        this.k8sNamespace = source["k8sNamespace"];
 	        this.k8sPod = source["k8sPod"];
 	        this.k8sPort = source["k8sPort"];
+	        this.k8sWorkloadKind = source["k8sWorkloadKind"];
+	        this.k8sWorkloadName = source["k8sWorkloadName"];
 	        this.profileCount = source["profileCount"];
 	    }
 	
