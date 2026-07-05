@@ -100,3 +100,4 @@ logo.afdesign~lock~
 *.afdesign~lock~
 *.class
 *.jar
+build/brew/
